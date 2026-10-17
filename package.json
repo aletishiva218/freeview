@@ -1,0 +1,17 @@
+{
+  "name": "youtube-no-ads",
+  "version": "2.0.0",
+  "description": "Ad-free YouTube viewer — direct stream extraction, no proxy",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "compression": "^1.8.2",
+    "express": "^4.18.2",
+    "youtubei.js": "*"
+  }
+}
