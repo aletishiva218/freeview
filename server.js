@@ -274,7 +274,10 @@ async function workerMain() {
   }
 
   function fmtVideoInfo(info) {
-    const b = info.basic_info;
+    const b  = info.basic_info  || {};
+    const pi = info.primary_info   || {};
+    const si = info.secondary_info || {};
+
     const related = [];
     try {
       for (const item of (info.watch_next_feed || [])) {
@@ -284,19 +287,54 @@ async function workerMain() {
       }
     } catch { /* optional */ }
 
-    // Progressive formats have direct stream URLs; DASH-only uses embed fallback
-    const streamable = (info.streaming_data?.formats?.length || 0) > 0;
+    // basic_info is empty on datacenter IPs (YouTube bot-detection).
+    // primary_info and secondary_info are still populated in that case.
+    const title =
+      b.title
+      || pi.title?.runs?.[0]?.text
+      || pi.title?.text
+      || '';
+
+    const channel =
+      b.author
+      || si.owner?.author?.name
+      || si.owner?.title?.text
+      || '';
+
+    const channelId =
+      b.channel_id
+      || si.owner?.author?.id
+      || '';
+
+    const views =
+      b.view_count
+        ? Number(b.view_count).toLocaleString() + ' views'
+        : pi.view_count?.original_view_count
+          ? Number(pi.view_count.original_view_count).toLocaleString() + ' views'
+          : pi.view_count?.short_view_count?.text || '';
+
+    const description =
+      b.short_description
+      || si.description?.text
+      || '';
+
+    // Progressive formats (video+audio muxed) are best; fall back to adaptive
+    // (DASH) if only those are available — the stream proxy handles both.
+    const streamable =
+      (info.streaming_data?.formats?.length          || 0) > 0 ||
+      (info.streaming_data?.adaptive_formats?.length || 0) > 0;
+
     const durSec  = b.duration || 0;
     const isShort = durSec > 0 && durSec <= 60;
 
     return {
-      id:          b.id                || '',
-      title:       b.title             || '',
-      channel:     b.author            || '',
-      channelId:   b.channel_id        || '',
-      views:       b.view_count ? Number(b.view_count).toLocaleString() + ' views' : '',
-      description: b.short_description || '',
-      duration:    formatDuration(durSec),
+      id: b.id || '',
+      title,
+      channel,
+      channelId,
+      views,
+      description,
+      duration: formatDuration(durSec),
       streamable,
       isShort,
       related,
