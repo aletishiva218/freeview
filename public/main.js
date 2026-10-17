@@ -303,7 +303,7 @@ function parseHash() {
 }
 
 function route() {
-  document.title = 'FreeView';
+  document.title = 'FreeView1';
   const { path, params } = parseHash();
 
   if (path === 'home' || path === '') return homeView();
