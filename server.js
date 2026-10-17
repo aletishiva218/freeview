@@ -10,7 +10,9 @@ import { exec } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT      = Number(process.env.PORT) || 3000;
-const N_WORKERS = Math.min(cpus().length, 4); // cap at 4 — beyond that YouTube rate-limits faster than we gain
+// WEB_CONCURRENCY lets you scale up on paid/high-RAM hosts.
+// Default 1 — Innertube uses ~150 MB per worker; free-tier hosts (512 MB) can't fit more than one.
+const N_WORKERS = Number(process.env.WEB_CONCURRENCY) || 1;
 
 // ─── Cluster primary ─────────────────────────────────────────────────────────
 if (cluster.isPrimary) {
