@@ -5,6 +5,40 @@ const searchInput = document.getElementById('search-input');
 // iOS Safari pauses <video> when going to background but allows <audio> to continue.
 const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
+// Holds the background <audio> element created inside a click handler.
+// iOS requires audio.play() to be called synchronously within a user-gesture
+// event (click/touch). hashchange is NOT a user gesture on iOS, so we must
+// create the element in the click handler and carry it into watchView.
+let _pendingBgAudio = null;
+
+if (IS_IOS) {
+  document.addEventListener('click', e => {
+    const link = e.target.closest('a[href*="#watch?v="]');
+    if (!link) return;
+    const href = link.getAttribute('href') || '';
+    const qi   = href.indexOf('?');
+    if (qi === -1) return;
+    const videoId = new URLSearchParams(href.slice(qi)).get('v');
+    if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) return;
+
+    // Discard any leftover audio from a previous navigation
+    if (_pendingBgAudio) {
+      _pendingBgAudio.pause();
+      _pendingBgAudio.src = '';
+      try { _pendingBgAudio.remove(); } catch {}
+    }
+
+    const a = document.createElement('audio');
+    a.src           = `/api/stream/audio/${encodeURIComponent(videoId)}`;
+    a.muted         = true;   // muted is always allowed; we unmute in setupIosAudio
+    a.preload       = 'auto';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.play().catch(() => {}); // start within user-gesture call stack
+    _pendingBgAudio = a;
+  }, true); // capture phase — runs before the hashchange routing
+}
+
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;')
@@ -172,8 +206,11 @@ function setupMediaSession(videoId, v, player) {
 function setupIosAudio(videoId, v, video, bgAudio) {
   if (!bgAudio) return;
 
-  // Autoplay requires muted=true initially on iOS; unmute once it starts.
-  bgAudio.addEventListener('play', () => { bgAudio.muted = false; }, { once: true });
+  // Audio was started (muted) from the click handler; unmute it now.
+  // Sync to the video's current time — audio may have played for up to ~1 s
+  // during the API fetch, so reset it to where the video is starting.
+  bgAudio.muted = false;
+  bgAudio.currentTime = video.currentTime;
 
   // Keep audio in sync with the video's controls
   video.addEventListener('play',       () => bgAudio.play().catch(() => {}));
@@ -321,18 +358,14 @@ async function watchView(videoId) {
   stopObserver();
   app.innerHTML = spinner();
 
-  // On iOS, create the background <audio> element NOW — before the async fetch —
-  // so it falls within the user-gesture call stack (navigation click).
-  // iOS autoplay policy allows muted audio without a gesture; we unmute after play starts.
+  // On iOS: consume the audio element pre-created in the click handler.
+  // If null (direct URL / programmatic navigation) we fall back to a normal
+  // unmuted <video> — background audio won't work in that case but at least
+  // the user can hear the video normally.
   let bgAudio = null;
   if (IS_IOS) {
-    bgAudio = document.createElement('audio');
-    bgAudio.src    = `/api/stream/audio/${encodeURIComponent(videoId)}`;
-    bgAudio.muted  = true;
-    bgAudio.preload = 'auto';
-    bgAudio.style.display = 'none';
-    document.body.appendChild(bgAudio);
-    bgAudio.play().catch(() => {});
+    bgAudio = _pendingBgAudio;
+    _pendingBgAudio = null;
   }
 
   try {
@@ -343,7 +376,7 @@ async function watchView(videoId) {
            id="player"
            src="/api/stream/${esc(videoId)}"
            controls autoplay preload="auto"
-           playsinline${IS_IOS ? ' muted' : ''}
+           playsinline${bgAudio ? ' muted' : ''}
            class="player"
          ></video>`
       : `<iframe
@@ -393,7 +426,7 @@ async function watchView(videoId) {
           }
         });
 
-        if (IS_IOS && bgAudio) {
+        if (bgAudio) {
           // iOS: audio element carries the sound and stays alive in background.
           // Video is muted (visuals only); hardware volume buttons control audio.
           setupIosAudio(videoId, v, player, bgAudio);
