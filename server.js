@@ -159,14 +159,28 @@ async function workerMain() {
     const hit = _streamCache.get(videoId);
     if (hit && Date.now() < hit.exp) return hit.url;
 
-    let fmt;
+    let url = null;
+
+    // Method 1: getStreamingData (works when YouTube returns adaptive stream data)
     for (const q of ['360p', '480p', '720p', '240p', '144p']) {
-      try { fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'video+audio' }); break; }
-      catch { /* try next */ }
+      try {
+        const fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'video+audio' });
+        if (fmt?.url) { url = fmt.url; break; }
+      } catch { /* try next */ }
     }
-    if (!fmt) throw new Error('No streamable format found for this video');
-    const url = fmt.url;
-    if (!url) throw new Error('Stream URL empty after deciphering');
+
+    // Method 2: getBasicInfo direct URL extraction (ANDROID itag 18 muxed stream)
+    // YouTube ANDROID client often returns plain URLs in streaming_data.formats
+    // even when streaming_data is empty for WEB client (datacenter IP detection).
+    if (!url) {
+      try {
+        const info = await ytStream.getBasicInfo(videoId);
+        const fmts = info.streaming_data?.formats ?? [];
+        url = fmts.find(f => f.url)?.url ?? null;
+      } catch { /* fall through */ }
+    }
+
+    if (!url) throw new Error('No streamable format found for this video');
 
     _streamCache.set(videoId, { url, exp: Date.now() + 4 * 60 * 60_000 });
     return url;
@@ -176,23 +190,20 @@ async function workerMain() {
     const hit = _audioCache.get(videoId);
     if (hit && Date.now() < hit.exp) return hit.url;
 
-    let fmt;
-    // Try audio-only adaptive stream first
+    let url = null;
+
+    // Try audio-only via getStreamingData first
     for (const q of ['best', 'medium', 'worst']) {
-      try { fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'audio' }); break; }
-      catch { /* try next */ }
+      try {
+        const fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'audio' });
+        if (fmt?.url) { url = fmt.url; break; }
+      } catch { /* try next */ }
     }
-    // ANDROID client can't decipher adaptive audio URLs; fall back to muxed stream.
-    // Browsers play the audio track from a muxed mp4 just fine in an <audio> element.
-    if (!fmt) {
-      for (const q of ['360p', '480p', '720p', '240p', '144p']) {
-        try { fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'video+audio' }); break; }
-        catch { /* try next */ }
-      }
-    }
-    if (!fmt) throw new Error('No audio format found for this video');
-    const url = fmt.url;
-    if (!url) throw new Error('Audio URL empty after deciphering');
+
+    // Fall back to muxed stream (browsers play audio track from mp4 in <audio> fine)
+    if (!url) url = await getStreamUrl(ytStream, videoId).catch(() => null);
+
+    if (!url) throw new Error('No audio format found for this video');
 
     _audioCache.set(videoId, { url, exp: Date.now() + 4 * 60 * 60_000 });
     return url;
@@ -445,6 +456,34 @@ async function workerMain() {
       cache:   { entries: _cache.size, inflight: _inflight.size },
       streams: _streamCache.size,
     });
+  });
+
+  // Diagnostic: checks what stream data is available for a video ID on this server
+  app.get('/api/diag/:id', async (req, res) => {
+    const id = req.params.id;
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
+    const result = { id };
+    // Test ANDROID getBasicInfo → direct URL from streaming_data.formats
+    try {
+      const ytS = await getYTStream();
+      const info = await ytS.getBasicInfo(id);
+      const fmts = info.streaming_data?.formats ?? [];
+      const adpt = info.streaming_data?.adaptive_formats ?? [];
+      result.android_formats = fmts.length;
+      result.android_adaptive = adpt.length;
+      result.android_direct_url = fmts[0]?.url ? fmts[0].url.substring(0, 60) + '...' : null;
+    } catch(e) { result.android_error = e.message; }
+    // Test ANDROID getStreamingData
+    try {
+      const ytS = await getYTStream();
+      let fmt;
+      for (const q of ['360p', '480p', '720p']) {
+        try { fmt = await ytS.getStreamingData(id, { quality: q, type: 'video+audio' }); break; }
+        catch(e) { result[`getStreamingData_${q}_err`] = e.message; }
+      }
+      result.getStreamingData_url = fmt?.url ? fmt.url.substring(0, 60) + '...' : null;
+    } catch(e) { result.getStreamingData_error = e.message; }
+    res.json(result);
   });
 
   // Home feed (10-min cache per page, single-flight)
