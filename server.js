@@ -559,8 +559,8 @@ async function workerMain() {
   // so browsers always fetch the latest style.css and app.js after a deploy.
   app.get('*', (_, res) => {
     const html = indexRaw
-      .replace('/style.css', `/style.css?v=${ASSET_VER}`)
-      .replace('/app.js',    `/app.js?v=${ASSET_VER}`);
+      .replace('/main.css', `/main.css?v=${ASSET_VER}`)
+      .replace('/main.js',  `/main.js?v=${ASSET_VER}`);
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
