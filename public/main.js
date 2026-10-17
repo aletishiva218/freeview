@@ -206,6 +206,13 @@ function setupMediaSession(videoId, v, player) {
 function setupMobileAudio(videoId, v, video, bgAudio) {
   if (!bgAudio) return;
 
+  // iOS 17.5+ Audio Session API: tells iOS to route this audio through the
+  // AVAudioSession "playback" category so it survives screen lock / home press.
+  // Only available in Safari; silently ignored on all other browsers.
+  if ('audioSession' in navigator) {
+    navigator.audioSession.type = 'playback';
+  }
+
   // Audio was started (muted) from the click handler; unmute it now.
   bgAudio.muted = false;
   // Sync to where the video is starting (both begin at 0 normally).
