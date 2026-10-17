@@ -420,11 +420,16 @@ async function watchView(videoId) {
       if (player) {
         player.addEventListener('error', () => {
           if (player.readyState === 0) {
-            player.parentElement.innerHTML = msg(
-              'Playback failed',
-              'This video may be unavailable or age-restricted.',
-              true
-            );
+            // Stream proxy failed — stop background audio and fall back to
+            // YouTube embed which carries its own audio track.
+            if (bgAudio) { bgAudio.pause(); bgAudio.src = ''; }
+            player.parentElement.innerHTML = `<iframe
+              id="player"
+              src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              allowfullscreen
+              class="player"
+            ></iframe>`;
           }
         });
 

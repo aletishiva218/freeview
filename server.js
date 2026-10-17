@@ -318,11 +318,12 @@ async function workerMain() {
       || si.description?.text
       || '';
 
-    // Progressive formats (video+audio muxed) are best; fall back to adaptive
-    // (DASH) if only those are available — the stream proxy handles both.
-    const streamable =
-      (info.streaming_data?.formats?.length          || 0) > 0 ||
-      (info.streaming_data?.adaptive_formats?.length || 0) > 0;
+    // info.streaming_data is empty on datacenter IPs (YouTube bot-detection),
+    // but yt.getStreamingData() uses the player API endpoint and often still
+    // works. Always return streamable=true so the client tries the native
+    // <video> player; client-side error handler falls back to YouTube embed
+    // if the stream proxy fails.
+    const streamable = true;
 
     const durSec  = b.duration || 0;
     const isShort = durSec > 0 && durSec <= 60;
