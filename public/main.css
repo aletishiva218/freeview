@@ -324,6 +324,8 @@ body {
 }
 
 /* ── Responsive ── */
+/* html overflow-x:hidden clips the negative-margin bleed without breaking
+   iOS body scroll (body overflow:hidden breaks momentum scroll on Safari). */
 html { overflow-x: hidden; }
 
 @media (max-width: 1100px) {
@@ -336,13 +338,19 @@ html { overflow-x: hidden; }
   .watch-related { width: 100%; min-width: 0; }
   .card--compact { padding: 4px 0; }
 
-  /* 100vw makes the player span the full viewport regardless of
-     any ancestor padding. position+left+transform re-centres it. */
+  /* align-self:stretch forces watch-main to fill the full column width so
+     100% inside it always equals (viewport - #app padding), making the
+     negative-margin calculation exact. Without this, align-items:flex-start
+     on watch-layout lets watch-main shrink to content width and breaks the math. */
+  .watch-main { align-self: stretch; }
+
+  /* Negative margins expand the player to the viewport edges.
+     No position/transform — avoids creating a stacking context that would
+     paint the player on top of the static .watch-meta below it. */
   .player-wrap {
-    width: 100vw;
-    position: relative;
-    left: 50%;
-    transform: translateX(-50%);
+    width: calc(100% + 40px);
+    margin-left: -20px;
+    margin-right: -20px;
     border-radius: 0;
   }
 }
@@ -352,6 +360,13 @@ html { overflow-x: hidden; }
   .logo { font-size: 1rem; }
   #app { padding: 14px 12px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+
+  /* Re-sync with the narrower 12px side padding. */
+  .player-wrap {
+    width: calc(100% + 24px);
+    margin-left: -12px;
+    margin-right: -12px;
+  }
 }
 
 @media (max-width: 400px) {
