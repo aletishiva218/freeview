@@ -397,11 +397,6 @@ async function watchView(videoId) {
             <h1 class="watch-title">${esc(v.title)}</h1>
             <p class="watch-channel">${esc(v.channel)}</p>
             <p class="watch-stats">${esc([v.views, v.duration].filter(Boolean).join(' · '))}</p>
-            ${v.streamable ? `
-              <div class="watch-actions">
-                <a href="/api/download/video/${esc(videoId)}" download="video-${esc(videoId)}.mp4" class="btn-dl btn-dl--video">&#11123; Download Video</a>
-                <a href="/api/download/audio/${esc(videoId)}" download="audio-${esc(videoId)}.webm" class="btn-dl btn-dl--audio">&#11123; Download Audio</a>
-              </div>` : ''}
             ${v.description ? `
               <details class="watch-desc">
                 <summary>Description</summary>

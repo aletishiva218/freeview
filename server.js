@@ -537,39 +537,6 @@ async function workerMain() {
     }
   });
 
-  // Download video (video+audio, triggers browser save-as)
-  app.get('/api/download/video/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
-    try {
-      const yt = await getYT();
-      let url;
-      try { url = await getStreamUrl(yt, id); }
-      catch { _streamCache.delete(id); url = await getStreamUrl(yt, id); }
-      res.set('Content-Disposition', `attachment; filename="video-${id}.mp4"`);
-      await streamProxy(url, id, req, res);
-    } catch (e) {
-      console.error(wid, '[/api/download/video]', e.message);
-      if (!res.headersSent) res.status(500).end(e.message);
-    }
-  });
-
-  // Download audio-only (triggers browser save-as)
-  app.get('/api/download/audio/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
-    try {
-      const yt = await getYT();
-      let url;
-      try { url = await getAudioUrl(yt, id); }
-      catch { _audioCache.delete(id); url = await getAudioUrl(yt, id); }
-      res.set('Content-Disposition', `attachment; filename="audio-${id}.webm"`);
-      await streamProxy(url, id, req, res);
-    } catch (e) {
-      console.error(wid, '[/api/download/audio]', e.message);
-      if (!res.headersSent) res.status(500).end(e.message);
-    }
-  });
 
   async function streamProxy(url, id, req, res) {
     const reqHeaders = {

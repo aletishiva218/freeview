@@ -407,40 +407,6 @@ html { overflow-x: hidden; }
   border-width: 2px;
 }
 
-/* ── Download buttons ── */
-.watch-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
-.btn-dl {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 0.84rem;
-  font-weight: 600;
-  text-decoration: none;
-  cursor: pointer;
-  transition: opacity 0.15s, transform 0.1s;
-  white-space: nowrap;
-}
-.btn-dl:hover { opacity: 0.85; transform: translateY(-1px); }
-.btn-dl:active { transform: translateY(0); }
-
-.btn-dl--video {
-  background: var(--red);
-  color: #fff;
-}
-
-.btn-dl--audio {
-  background: var(--bg3);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
 
 /* ── Native video element chrome ── */
 video::-webkit-media-controls-panel { background: #111; }
