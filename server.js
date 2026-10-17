@@ -5,6 +5,7 @@ import compression from 'compression';
 import { Innertube, Platform } from 'youtubei.js';
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 
@@ -13,6 +14,9 @@ const PORT      = Number(process.env.PORT) || 3000;
 // WEB_CONCURRENCY lets you scale up on paid/high-RAM hosts.
 // Default 1 — Innertube uses ~150 MB per worker; free-tier hosts (512 MB) can't fit more than one.
 const N_WORKERS = Number(process.env.WEB_CONCURRENCY) || 1;
+
+// Stamp changes on every server restart so browsers always fetch fresh CSS/JS.
+const ASSET_VER = Date.now();
 
 // ─── Cluster primary ─────────────────────────────────────────────────────────
 if (cluster.isPrimary) {
@@ -345,17 +349,13 @@ async function workerMain() {
   // ─── Express ──────────────────────────────────────────────────────────────
   const app = express();
 
+  // Read index.html once at worker startup; inject asset version at serve time.
+  const indexRaw = readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+
   // Gzip all JSON/HTML/JS/CSS responses — cuts typical API payload by 60–70 %
   app.use(compression());
-  app.use(express.static(path.join(__dirname, 'public'), {
-    setHeaders(res, filePath) {
-      if (filePath.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-      }
-    },
-  }));
+  // Serve static assets (CSS, JS, images) but NOT index.html — that's handled below.
+  app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
   // Health check — useful for load-balancers and uptime monitors
   app.get('/health', (req, res) => {
@@ -554,12 +554,17 @@ async function workerMain() {
     }
   }
 
-  // SPA fallback — never cache the HTML shell so browsers always get the latest asset URLs
+  // SPA fallback — inject asset version and never let browsers cache this response.
+  // Every server restart (= every Render deploy) produces a new ASSET_VER timestamp,
+  // so browsers always fetch the latest style.css and app.js after a deploy.
   app.get('*', (_, res) => {
+    const html = indexRaw
+      .replace('/style.css', `/style.css?v=${ASSET_VER}`)
+      .replace('/app.js',    `/app.js?v=${ASSET_VER}`);
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.type('html').send(html);
   });
 
   // ─── Start ─────────────────────────────────────────────────────────────────
