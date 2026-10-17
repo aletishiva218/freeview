@@ -354,8 +354,21 @@ async function workerMain() {
 
   // Gzip all JSON/HTML/JS/CSS responses — cuts typical API payload by 60–70 %
   app.use(compression());
-  // Serve static assets (CSS, JS, images) but NOT index.html — that's handled below.
-  app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
+  // Redirect old asset URLs that browsers may have cached in old index.html snapshots.
+  // Query strings (?v=2 etc.) are irrelevant to routing — these catch all variants.
+  app.get('/style.css', (_, res) => res.redirect(301, '/main.css'));
+  app.get('/app.js',    (_, res) => res.redirect(301, '/main.js'));
+
+  // Serve static assets — no caching on CSS/JS so browsers always fetch the latest.
+  app.use(express.static(path.join(__dirname, 'public'), {
+    index: false,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.css') || filePath.endsWith('.js')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
+    },
+  }));
 
   // Health check — useful for load-balancers and uptime monitors
   app.get('/health', (req, res) => {
