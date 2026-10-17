@@ -2,7 +2,7 @@ import cluster from 'cluster';
 import { cpus } from 'os';
 import express from 'express';
 import compression from 'compression';
-import { Innertube, Platform } from 'youtubei.js';
+import { Innertube, Platform, ClientType } from 'youtubei.js';
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -89,6 +89,24 @@ async function workerMain() {
     return _ytPromise;
   }
 
+  // ─── Innertube ANDROID singleton (for stream URL resolution) ─────────────
+  // ANDROID client returns direct URLs for muxed streams on datacenter IPs
+  // where the WEB client returns empty streaming_data (YouTube bot-detection).
+  let _ytStream = null;
+  let _ytStreamPromise = null;
+
+  function getYTStream() {
+    if (_ytStream) return Promise.resolve(_ytStream);
+    if (_ytStreamPromise) return _ytStreamPromise;
+    _ytStreamPromise = (async () => {
+      installEvaluator();
+      const yt = await Innertube.create({ generate_session_locally: true, client_type: ClientType.ANDROID });
+      _ytStream = yt;
+      return yt;
+    })().catch(err => { _ytStreamPromise = null; throw err; });
+    return _ytStreamPromise;
+  }
+
   // ─── Single-flight + TTL cache ────────────────────────────────────────────
   // Single-flight: if two requests miss the cache simultaneously, only ONE
   // hits the YouTube API — all others wait for that same promise to resolve.
@@ -137,13 +155,13 @@ async function workerMain() {
   // from page 1 which is fast because the processed result is already in _cache.
   const _contCache = new Map();
 
-  async function getStreamUrl(yt, videoId) {
+  async function getStreamUrl(ytStream, videoId) {
     const hit = _streamCache.get(videoId);
     if (hit && Date.now() < hit.exp) return hit.url;
 
     let fmt;
     for (const q of ['360p', '480p', '720p', '240p', '144p']) {
-      try { fmt = await yt.getStreamingData(videoId, { quality: q, type: 'video+audio' }); break; }
+      try { fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'video+audio' }); break; }
       catch { /* try next */ }
     }
     if (!fmt) throw new Error('No streamable format found for this video');
@@ -154,14 +172,23 @@ async function workerMain() {
     return url;
   }
 
-  async function getAudioUrl(yt, videoId) {
+  async function getAudioUrl(ytStream, videoId) {
     const hit = _audioCache.get(videoId);
     if (hit && Date.now() < hit.exp) return hit.url;
 
     let fmt;
+    // Try audio-only adaptive stream first
     for (const q of ['best', 'medium', 'worst']) {
-      try { fmt = await yt.getStreamingData(videoId, { quality: q, type: 'audio' }); break; }
+      try { fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'audio' }); break; }
       catch { /* try next */ }
+    }
+    // ANDROID client can't decipher adaptive audio URLs; fall back to muxed stream.
+    // Browsers play the audio track from a muxed mp4 just fine in an <audio> element.
+    if (!fmt) {
+      for (const q of ['360p', '480p', '720p', '240p', '144p']) {
+        try { fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'video+audio' }); break; }
+        catch { /* try next */ }
+      }
     }
     if (!fmt) throw new Error('No audio format found for this video');
     const url = fmt.url;
@@ -506,13 +533,13 @@ async function workerMain() {
     if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
 
     try {
-      const yt = await getYT();
+      const ytStream = await getYTStream();
       let url;
       try {
-        url = await getStreamUrl(yt, id);
+        url = await getStreamUrl(ytStream, id);
       } catch {
         _streamCache.delete(id); // bust cache and retry once
-        url = await getStreamUrl(yt, id);
+        url = await getStreamUrl(ytStream, id);
       }
       await streamProxy(url, id, req, res);
     } catch (e) {
@@ -521,15 +548,16 @@ async function workerMain() {
     }
   });
 
-  // Audio-only stream — for iOS background playback (no Content-Disposition)
+  // Audio stream — served to the background <audio> element on mobile.
+  // Falls back to muxed video+audio when audio-only adaptive formats are unavailable.
   app.get('/api/stream/audio/:id', async (req, res) => {
     const id = req.params.id;
     if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
     try {
-      const yt = await getYT();
+      const ytStream = await getYTStream();
       let url;
-      try { url = await getAudioUrl(yt, id); }
-      catch { _audioCache.delete(id); url = await getAudioUrl(yt, id); }
+      try { url = await getAudioUrl(ytStream, id); }
+      catch { _audioCache.delete(id); url = await getAudioUrl(ytStream, id); }
       await streamProxy(url, id, req, res);
     } catch (e) {
       console.error(wid, '[/api/stream/audio]', e.message);
@@ -562,8 +590,8 @@ async function workerMain() {
     // Expired URL — get a fresh one and retry once
     if (upstream.status === 403 || upstream.status === 410) {
       _streamCache.delete(id);
-      const yt  = await getYT();
-      const freshUrl = await getStreamUrl(yt, id);
+      const ytStream = await getYTStream();
+      const freshUrl = await getStreamUrl(ytStream, id);
       return streamProxy(freshUrl, id, req, res);
     }
 
