@@ -110,8 +110,14 @@ function pageLoader() {
 }
 
 // ─── Views ────────────────────────────────────────────────────────────────────
+function setWatchMode(on) {
+  app.style.paddingLeft  = on ? '0' : '';
+  app.style.paddingRight = on ? '0' : '';
+}
+
 async function homeView() {
   stopObserver();
+  setWatchMode(false);
 
   // page starts at 2 — page 1 is always the initial/refresh load
   let page    = 2;
@@ -178,6 +184,7 @@ async function homeView() {
 
 async function searchView(q) {
   stopObserver();
+  setWatchMode(false);
   app.innerHTML = spinner();
   searchInput.value = q;
 
@@ -226,6 +233,7 @@ async function searchView(q) {
 
 async function watchView(videoId) {
   stopObserver();
+  setWatchMode(true);
   app.innerHTML = spinner();
   try {
     const v = await api.video(videoId);
@@ -235,6 +243,7 @@ async function watchView(videoId) {
            id="player"
            src="/api/stream/${esc(videoId)}"
            controls autoplay preload="auto"
+           playsinline
            class="player"
          ></video>`
       : `<iframe

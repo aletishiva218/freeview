@@ -324,8 +324,6 @@ body {
 }
 
 /* ── Responsive ── */
-body { overflow-x: hidden; }
-
 @media (max-width: 1100px) {
   .watch-related { width: 300px; min-width: 300px; }
   .card--compact .card-thumb { width: 120px; min-width: 120px; }
@@ -336,13 +334,10 @@ body { overflow-x: hidden; }
   .watch-related { width: 100%; min-width: 0; }
   .card--compact { padding: 4px 0; }
 
-  /* Full-bleed player — bleeds out of #app's 20px side padding */
-  .player-wrap {
-    margin-left: -20px;
-    margin-right: -20px;
-    width: calc(100% + 40px);
-    border-radius: 0;
-  }
+  /* JS sets #app padding to 0 on watch pages (setWatchMode).
+     Re-add side padding to every content element below the player. */
+  .player-wrap { border-radius: 0; }
+  .watch-meta, .watch-actions, .watch-desc, .watch-related { padding-left: 20px; padding-right: 20px; }
 }
 
 @media (max-width: 600px) {
@@ -351,12 +346,7 @@ body { overflow-x: hidden; }
   #app { padding: 14px 12px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 
-  /* Re-sync bleed margins with the narrower 12px #app padding */
-  .player-wrap {
-    margin-left: -12px;
-    margin-right: -12px;
-    width: calc(100% + 24px);
-  }
+  .watch-meta, .watch-actions, .watch-desc, .watch-related { padding-left: 12px; padding-right: 12px; }
 }
 
 @media (max-width: 400px) {
