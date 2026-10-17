@@ -324,6 +324,8 @@ body {
 }
 
 /* ── Responsive ── */
+body { overflow-x: hidden; }
+
 @media (max-width: 1100px) {
   .watch-related { width: 300px; min-width: 300px; }
   .card--compact .card-thumb { width: 120px; min-width: 120px; }
@@ -333,6 +335,14 @@ body {
   .watch-layout { flex-direction: column; }
   .watch-related { width: 100%; min-width: 0; }
   .card--compact { padding: 4px 0; }
+
+  /* Full-bleed player — bleeds out of #app's 20px side padding */
+  .player-wrap {
+    margin-left: -20px;
+    margin-right: -20px;
+    width: calc(100% + 40px);
+    border-radius: 0;
+  }
 }
 
 @media (max-width: 600px) {
@@ -340,6 +350,13 @@ body {
   .logo { font-size: 1rem; }
   #app { padding: 14px 12px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+
+  /* Re-sync bleed margins with the narrower 12px #app padding */
+  .player-wrap {
+    margin-left: -12px;
+    margin-right: -12px;
+    width: calc(100% + 24px);
+  }
 }
 
 @media (max-width: 400px) {
