@@ -90,8 +90,9 @@ async function workerMain() {
   }
 
   // ─── Innertube ANDROID singleton (for stream URL resolution) ─────────────
-  // ANDROID client returns direct URLs for muxed streams on datacenter IPs
-  // where the WEB client returns empty streaming_data (YouTube bot-detection).
+  // Uses the ANDROID client (returns plain muxed URLs without cipher).
+  // If YOUTUBE_COOKIE is set, the session is authenticated which allows
+  // streaming data to be returned even from datacenter IPs (Render free tier).
   let _ytStream = null;
   let _ytStreamPromise = null;
 
@@ -100,7 +101,9 @@ async function workerMain() {
     if (_ytStreamPromise) return _ytStreamPromise;
     _ytStreamPromise = (async () => {
       installEvaluator();
-      const yt = await Innertube.create({ generate_session_locally: true, client_type: ClientType.ANDROID });
+      const opts = { generate_session_locally: true, client_type: ClientType.ANDROID };
+      if (process.env.YOUTUBE_COOKIE) opts.cookie = process.env.YOUTUBE_COOKIE;
+      const yt = await Innertube.create(opts);
       _ytStream = yt;
       return yt;
     })().catch(err => { _ytStreamPromise = null; throw err; });
