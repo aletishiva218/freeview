@@ -109,6 +109,51 @@ function pageLoader() {
   return el;
 }
 
+// ─── Media Session (background audio on mobile) ───────────────────────────────
+function setupMediaSession(videoId, v, player) {
+  if (!('mediaSession' in navigator)) return;
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title:  v.title   || 'FreeView',
+    artist: v.channel || '',
+    artwork: [
+      { src: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`, sizes: '320x180', type: 'image/jpeg' },
+      { src: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' },
+      { src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, sizes: '1280x720', type: 'image/jpeg' },
+    ],
+  });
+
+  navigator.mediaSession.setActionHandler('play',  () => player.play());
+  navigator.mediaSession.setActionHandler('pause', () => player.pause());
+  navigator.mediaSession.setActionHandler('seekbackward', d => {
+    player.currentTime = Math.max(0, player.currentTime - (d.seekOffset || 10));
+  });
+  navigator.mediaSession.setActionHandler('seekforward', d => {
+    player.currentTime = Math.min(player.duration || Infinity, player.currentTime + (d.seekOffset || 10));
+  });
+  try {
+    navigator.mediaSession.setActionHandler('seekto', d => {
+      if (d.fastSeek && 'fastSeek' in player) player.fastSeek(d.seekTime);
+      else player.currentTime = d.seekTime;
+    });
+  } catch { /* seekto not supported in all browsers */ }
+
+  player.addEventListener('play',  () => { navigator.mediaSession.playbackState = 'playing'; });
+  player.addEventListener('pause', () => { navigator.mediaSession.playbackState = 'paused'; });
+  player.addEventListener('ended', () => { navigator.mediaSession.playbackState = 'none'; });
+
+  player.addEventListener('timeupdate', () => {
+    if (!player.duration || isNaN(player.duration)) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration:     player.duration,
+        playbackRate: player.playbackRate,
+        position:     player.currentTime,
+      });
+    } catch { /* setPositionState not supported in all browsers */ }
+  });
+}
+
 // ─── Views ────────────────────────────────────────────────────────────────────
 async function homeView() {
   stopObserver();
@@ -284,6 +329,7 @@ async function watchView(videoId) {
             );
           }
         });
+        setupMediaSession(videoId, v, player);
       }
     }
 
