@@ -2,16 +2,18 @@
 const app = document.getElementById('app');
 const searchInput = document.getElementById('search-input');
 
-// iOS Safari pauses <video> when going to background but allows <audio> to continue.
-const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+// Both iOS and Android need <audio> (not <video>) for background playback.
+// iOS Safari always pauses <video> in background; Android Chrome is unreliable
+// for background <video> even with Media Session. <audio> stays alive on both.
+const IS_MOBILE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 // Holds the background <audio> element created inside a click handler.
-// iOS requires audio.play() to be called synchronously within a user-gesture
-// event (click/touch). hashchange is NOT a user gesture on iOS, so we must
-// create the element in the click handler and carry it into watchView.
+// Both iOS and Android require audio.play() to be called within a user-gesture
+// event. hashchange is NOT a user gesture, so we create the element in the
+// click capture handler and carry it forward into watchView.
 let _pendingBgAudio = null;
 
-if (IS_IOS) {
+if (IS_MOBILE) {
   document.addEventListener('click', e => {
     const link = e.target.closest('a[href*="#watch?v="]');
     if (!link) return;
@@ -30,7 +32,7 @@ if (IS_IOS) {
 
     const a = document.createElement('audio');
     a.src           = `/api/stream/audio/${encodeURIComponent(videoId)}`;
-    a.muted         = true;   // muted is always allowed; we unmute in setupIosAudio
+    a.muted         = true;   // muted is always allowed; we unmute in setupMobileAudio
     a.preload       = 'auto';
     a.style.display = 'none';
     document.body.appendChild(a);
@@ -198,44 +200,45 @@ function setupMediaSession(videoId, v, player) {
   player.addEventListener('timeupdate', updatePosition);
 }
 
-// ─── iOS background audio ─────────────────────────────────────────────────────
-// iOS Safari pauses <video> in background but keeps <audio> alive.
-// Strategy: mute the <video> (visuals only) and play a hidden <audio> for sound.
-// The <audio> is created before the async video-info fetch so it falls within
-// the user-gesture call stack from the navigation click (iOS autoplay policy).
-function setupIosAudio(videoId, v, video, bgAudio) {
+// ─── Mobile background audio ──────────────────────────────────────────────────
+// iOS and Android both pause <video> in background but keep <audio> alive.
+// Strategy: muted <video> for visuals + hidden <audio> for sound.
+function setupMobileAudio(videoId, v, video, bgAudio) {
   if (!bgAudio) return;
 
   // Audio was started (muted) from the click handler; unmute it now.
-  // Sync to the video's current time — audio may have played for up to ~1 s
-  // during the API fetch, so reset it to where the video is starting.
   bgAudio.muted = false;
+  // Sync to where the video is starting (both begin at 0 normally).
   bgAudio.currentTime = video.currentTime;
 
-  // Keep audio in sync with the video's controls
+  // Mirror video controls → audio element
   video.addEventListener('play',       () => bgAudio.play().catch(() => {}));
   video.addEventListener('pause',      () => bgAudio.pause());
   video.addEventListener('seeked',     () => { bgAudio.currentTime = video.currentTime; });
   video.addEventListener('ratechange', () => { bgAudio.playbackRate = video.playbackRate; });
 
-  // When returning from background: iOS has paused the video but audio kept going.
-  // Sync video time to wherever audio has reached, then resume.
+  // Track whether the video was playing when the user left — so we don't
+  // resume a video the user intentionally paused before pressing home.
+  let wasPlayingBeforeHide = false;
   const onVisibility = () => {
-    if (!document.hidden && !bgAudio.paused) {
+    if (document.hidden) {
+      wasPlayingBeforeHide = !video.paused;
+    } else if (wasPlayingBeforeHide) {
+      // Audio kept playing in background; sync video back to it and resume.
       video.currentTime = bgAudio.currentTime;
       video.play().catch(() => {});
     }
   };
   document.addEventListener('visibilitychange', onVisibility);
 
-  // Clean up when the user navigates away (hashchange)
+  // Clean up when navigating away
   window.addEventListener('hashchange', () => {
     bgAudio.pause();
     bgAudio.src = '';
     document.removeEventListener('visibilitychange', onVisibility);
   }, { once: true });
 
-  // Register the audio element (not the video) with the OS for lock-screen controls
+  // Register the <audio> (not the muted <video>) with the OS for lock-screen controls
   setupMediaSession(videoId, v, bgAudio);
 }
 
@@ -358,12 +361,11 @@ async function watchView(videoId) {
   stopObserver();
   app.innerHTML = spinner();
 
-  // On iOS: consume the audio element pre-created in the click handler.
-  // If null (direct URL / programmatic navigation) we fall back to a normal
-  // unmuted <video> — background audio won't work in that case but at least
-  // the user can hear the video normally.
+  // Consume the audio element pre-created in the click handler.
+  // If null (direct URL / programmatic navigation) fall back to normal
+  // unmuted <video> — background audio won't work but at least sound plays.
   let bgAudio = null;
-  if (IS_IOS) {
+  if (IS_MOBILE) {
     bgAudio = _pendingBgAudio;
     _pendingBgAudio = null;
   }
@@ -427,9 +429,9 @@ async function watchView(videoId) {
         });
 
         if (bgAudio) {
-          // iOS: audio element carries the sound and stays alive in background.
+          // Mobile: audio element carries the sound and stays alive in background.
           // Video is muted (visuals only); hardware volume buttons control audio.
-          setupIosAudio(videoId, v, player, bgAudio);
+          setupMobileAudio(videoId, v, player, bgAudio);
         } else {
           // Android / desktop: single <video> with Media Session for OS controls.
           if (bgAudio) { bgAudio.pause(); bgAudio.src = ''; } // shouldn't happen, safety
