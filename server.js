@@ -347,7 +347,15 @@ async function workerMain() {
 
   // Gzip all JSON/HTML/JS/CSS responses — cuts typical API payload by 60–70 %
   app.use(compression());
-  app.use(express.static(path.join(__dirname, 'public')));
+  app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    },
+  }));
 
   // Health check — useful for load-balancers and uptime monitors
   app.get('/health', (req, res) => {
@@ -546,10 +554,13 @@ async function workerMain() {
     }
   }
 
-  // SPA fallback
-  app.get('*', (_, res) =>
-    res.sendFile(path.join(__dirname, 'public', 'index.html'))
-  );
+  // SPA fallback — never cache the HTML shell so browsers always get the latest asset URLs
+  app.get('*', (_, res) => {
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
 
   // ─── Start ─────────────────────────────────────────────────────────────────
   console.log(`  Worker ${process.pid} initialising Innertube…`);
