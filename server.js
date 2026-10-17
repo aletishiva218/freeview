@@ -520,6 +520,22 @@ async function workerMain() {
     }
   });
 
+  // Audio-only stream — for iOS background playback (no Content-Disposition)
+  app.get('/api/stream/audio/:id', async (req, res) => {
+    const id = req.params.id;
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
+    try {
+      const yt = await getYT();
+      let url;
+      try { url = await getAudioUrl(yt, id); }
+      catch { _audioCache.delete(id); url = await getAudioUrl(yt, id); }
+      await streamProxy(url, id, req, res);
+    } catch (e) {
+      console.error(wid, '[/api/stream/audio]', e.message);
+      if (!res.headersSent) res.status(500).end(e.message);
+    }
+  });
+
   // Download video (video+audio, triggers browser save-as)
   app.get('/api/download/video/:id', async (req, res) => {
     const id = req.params.id;
