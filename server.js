@@ -2,7 +2,7 @@ import cluster from 'cluster';
 import { cpus } from 'os';
 import express from 'express';
 import compression from 'compression';
-import { Innertube, Platform, ClientType } from 'youtubei.js';
+import { Innertube, Platform } from 'youtubei.js';
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -89,24 +89,6 @@ async function workerMain() {
     return _ytPromise;
   }
 
-  // ─── Innertube ANDROID singleton (for stream URL resolution) ─────────────
-  // ANDROID client returns direct URLs for muxed streams on datacenter IPs
-  // where the WEB client returns empty streaming_data (YouTube bot-detection).
-  let _ytStream = null;
-  let _ytStreamPromise = null;
-
-  function getYTStream() {
-    if (_ytStream) return Promise.resolve(_ytStream);
-    if (_ytStreamPromise) return _ytStreamPromise;
-    _ytStreamPromise = (async () => {
-      installEvaluator();
-      const yt = await Innertube.create({ generate_session_locally: true, client_type: ClientType.ANDROID });
-      _ytStream = yt;
-      return yt;
-    })().catch(err => { _ytStreamPromise = null; throw err; });
-    return _ytStreamPromise;
-  }
-
   // ─── Single-flight + TTL cache ────────────────────────────────────────────
   // Single-flight: if two requests miss the cache simultaneously, only ONE
   // hits the YouTube API — all others wait for that same promise to resolve.
@@ -142,72 +124,12 @@ async function workerMain() {
     return p;
   }
 
-  // ─── Stream URL cache (4-hour TTL) ────────────────────────────────────────
-  const _streamCache = new Map();
-
-  // ─── Audio URL cache (4-hour TTL) ─────────────────────────────────────────
-  const _audioCache = new Map();
-
   // ─── Continuation cache (raw ytjs objects for page 2+) ────────────────────
   // Keys: `cont:home:<page>` or `cont:s:<query>:<page>`
   // 30-min TTL — YouTube continuation tokens expire after ~1 hour.
   // Each worker holds its own copy; a cross-worker miss causes a re-fetch
   // from page 1 which is fast because the processed result is already in _cache.
   const _contCache = new Map();
-
-  async function getStreamUrl(ytStream, videoId) {
-    const hit = _streamCache.get(videoId);
-    if (hit && Date.now() < hit.exp) return hit.url;
-
-    let url = null;
-
-    // Method 1: getStreamingData (works when YouTube returns adaptive stream data)
-    for (const q of ['360p', '480p', '720p', '240p', '144p']) {
-      try {
-        const fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'video+audio' });
-        if (fmt?.url) { url = fmt.url; break; }
-      } catch { /* try next */ }
-    }
-
-    // Method 2: getBasicInfo direct URL extraction (ANDROID itag 18 muxed stream)
-    // YouTube ANDROID client often returns plain URLs in streaming_data.formats
-    // even when streaming_data is empty for WEB client (datacenter IP detection).
-    if (!url) {
-      try {
-        const info = await ytStream.getBasicInfo(videoId);
-        const fmts = info.streaming_data?.formats ?? [];
-        url = fmts.find(f => f.url)?.url ?? null;
-      } catch { /* fall through */ }
-    }
-
-    if (!url) throw new Error('No streamable format found for this video');
-
-    _streamCache.set(videoId, { url, exp: Date.now() + 4 * 60 * 60_000 });
-    return url;
-  }
-
-  async function getAudioUrl(ytStream, videoId) {
-    const hit = _audioCache.get(videoId);
-    if (hit && Date.now() < hit.exp) return hit.url;
-
-    let url = null;
-
-    // Try audio-only via getStreamingData first
-    for (const q of ['best', 'medium', 'worst']) {
-      try {
-        const fmt = await ytStream.getStreamingData(videoId, { quality: q, type: 'audio' });
-        if (fmt?.url) { url = fmt.url; break; }
-      } catch { /* try next */ }
-    }
-
-    // Fall back to muxed stream (browsers play audio track from mp4 in <audio> fine)
-    if (!url) url = await getStreamUrl(ytStream, videoId).catch(() => null);
-
-    if (!url) throw new Error('No audio format found for this video');
-
-    _audioCache.set(videoId, { url, exp: Date.now() + 4 * 60 * 60_000 });
-    return url;
-  }
 
   // ─── Timeout helper ──────────────────────────────────────────────────────
   // Races a promise against a deadline. Prevents a slow/hung YouTube API
@@ -356,13 +278,6 @@ async function workerMain() {
       || si.description?.text
       || '';
 
-    // info.streaming_data is empty on datacenter IPs (YouTube bot-detection),
-    // but yt.getStreamingData() uses the player API endpoint and often still
-    // works. Always return streamable=true so the client tries the native
-    // <video> player; client-side error handler falls back to YouTube embed
-    // if the stream proxy fails.
-    const streamable = true;
-
     const durSec  = b.duration || 0;
     const isShort = durSec > 0 && durSec <= 60;
 
@@ -374,7 +289,6 @@ async function workerMain() {
       views,
       description,
       duration: formatDuration(durSec),
-      streamable,
       isShort,
       related,
     };
@@ -450,40 +364,11 @@ async function workerMain() {
   // Health check — useful for load-balancers and uptime monitors
   app.get('/health', (req, res) => {
     res.json({
-      status:  'ok',
-      worker:  process.pid,
-      uptime:  Math.floor(process.uptime()),
-      cache:   { entries: _cache.size, inflight: _inflight.size },
-      streams: _streamCache.size,
+      status: 'ok',
+      worker: process.pid,
+      uptime: Math.floor(process.uptime()),
+      cache:  { entries: _cache.size, inflight: _inflight.size },
     });
-  });
-
-  // Diagnostic: checks what stream data is available for a video ID on this server
-  app.get('/api/diag/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
-    const result = { id };
-    // Test ANDROID getBasicInfo → direct URL from streaming_data.formats
-    try {
-      const ytS = await getYTStream();
-      const info = await ytS.getBasicInfo(id);
-      const fmts = info.streaming_data?.formats ?? [];
-      const adpt = info.streaming_data?.adaptive_formats ?? [];
-      result.android_formats = fmts.length;
-      result.android_adaptive = adpt.length;
-      result.android_direct_url = fmts[0]?.url ? fmts[0].url.substring(0, 60) + '...' : null;
-    } catch(e) { result.android_error = e.message; }
-    // Test ANDROID getStreamingData
-    try {
-      const ytS = await getYTStream();
-      let fmt;
-      for (const q of ['360p', '480p', '720p']) {
-        try { fmt = await ytS.getStreamingData(id, { quality: q, type: 'video+audio' }); break; }
-        catch(e) { result[`getStreamingData_${q}_err`] = e.message; }
-      }
-      result.getStreamingData_url = fmt?.url ? fmt.url.substring(0, 60) + '...' : null;
-    } catch(e) { result.getStreamingData_error = e.message; }
-    res.json(result);
   });
 
   // Home feed (10-min cache per page, single-flight)
@@ -566,95 +451,6 @@ async function workerMain() {
     }
   });
 
-  // Stream proxy — range-request aware (seeking support)
-  app.get('/api/stream/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
-
-    try {
-      const ytStream = await getYTStream();
-      let url;
-      try {
-        url = await getStreamUrl(ytStream, id);
-      } catch {
-        _streamCache.delete(id); // bust cache and retry once
-        url = await getStreamUrl(ytStream, id);
-      }
-      await streamProxy(url, id, req, res);
-    } catch (e) {
-      console.error(wid, '[/api/stream]', e.message);
-      if (!res.headersSent) res.status(500).end(e.message);
-    }
-  });
-
-  // Audio stream — served to the background <audio> element on mobile.
-  // Falls back to muxed video+audio when audio-only adaptive formats are unavailable.
-  app.get('/api/stream/audio/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return res.status(400).end();
-    try {
-      const ytStream = await getYTStream();
-      let url;
-      try { url = await getAudioUrl(ytStream, id); }
-      catch { _audioCache.delete(id); url = await getAudioUrl(ytStream, id); }
-      await streamProxy(url, id, req, res);
-    } catch (e) {
-      console.error(wid, '[/api/stream/audio]', e.message);
-      if (!res.headersSent) res.status(500).end(e.message);
-    }
-  });
-
-
-  async function streamProxy(url, id, req, res) {
-    const reqHeaders = {
-      'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Referer':         'https://www.youtube.com/',
-      'Origin':          'https://www.youtube.com',
-      'Accept-Language': 'en-US,en;q=0.9',
-    };
-    if (req.headers.range) reqHeaders['Range'] = req.headers.range;
-
-    // 10-second timeout on the initial connection to YouTube CDN.
-    // After headers arrive we stream with no timeout (video can take minutes).
-    const controller = new AbortController();
-    const connectTimer = setTimeout(() => controller.abort(), 10_000);
-
-    let upstream;
-    try {
-      upstream = await fetch(url, { headers: reqHeaders, signal: controller.signal });
-    } finally {
-      clearTimeout(connectTimer);
-    }
-
-    // Expired URL — get a fresh one and retry once
-    if (upstream.status === 403 || upstream.status === 410) {
-      _streamCache.delete(id);
-      const ytStream = await getYTStream();
-      const freshUrl = await getStreamUrl(ytStream, id);
-      return streamProxy(freshUrl, id, req, res);
-    }
-
-    res.status(upstream.status);
-    for (const h of ['content-type','content-length','content-range','accept-ranges']) {
-      const v = upstream.headers.get(h);
-      if (v) res.set(h, v);
-    }
-    res.set('Cache-Control', 'no-store');
-
-    const reader = upstream.body.getReader();
-    req.on('close', () => reader.cancel().catch(() => {}));
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        // Back-pressure: wait for client drain before reading more
-        if (!res.write(value)) await new Promise(r => res.once('drain', r));
-      }
-    } finally {
-      res.end();
-    }
-  }
 
   // SPA fallback — inject asset version and never let browsers cache this response.
   // Every server restart (= every Render deploy) produces a new ASSET_VER timestamp,

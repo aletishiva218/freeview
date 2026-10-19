@@ -2,44 +2,6 @@
 const app = document.getElementById('app');
 const searchInput = document.getElementById('search-input');
 
-// Both iOS and Android need <audio> (not <video>) for background playback.
-// iOS Safari always pauses <video> in background; Android Chrome is unreliable
-// for background <video> even with Media Session. <audio> stays alive on both.
-const IS_MOBILE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-// Holds the background <audio> element created inside a click handler.
-// Both iOS and Android require audio.play() to be called within a user-gesture
-// event. hashchange is NOT a user gesture, so we create the element in the
-// click capture handler and carry it forward into watchView.
-let _pendingBgAudio = null;
-
-if (IS_MOBILE) {
-  document.addEventListener('click', e => {
-    const link = e.target.closest('a[href*="#watch?v="]');
-    if (!link) return;
-    const href = link.getAttribute('href') || '';
-    const qi   = href.indexOf('?');
-    if (qi === -1) return;
-    const videoId = new URLSearchParams(href.slice(qi)).get('v');
-    if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) return;
-
-    // Discard any leftover audio from a previous navigation
-    if (_pendingBgAudio) {
-      _pendingBgAudio.pause();
-      _pendingBgAudio.src = '';
-      try { _pendingBgAudio.remove(); } catch {}
-    }
-
-    const a = document.createElement('audio');
-    a.src           = `/api/stream/audio/${encodeURIComponent(videoId)}`;
-    a.muted         = true;   // muted is always allowed; we unmute in setupMobileAudio
-    a.preload       = 'auto';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.play().catch(() => {}); // start within user-gesture call stack
-    _pendingBgAudio = a;
-  }, true); // capture phase — runs before the hashchange routing
-}
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -148,106 +110,6 @@ function pageLoader() {
   return el;
 }
 
-// ─── Media Session (background audio on mobile) ───────────────────────────────
-function setupMediaSession(videoId, v, player) {
-  if (!('mediaSession' in navigator)) return;
-
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title:  v.title   || 'FreeView',
-    artist: v.channel || '',
-    artwork: [
-      { src: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`, sizes: '320x180', type: 'image/jpeg' },
-      { src: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' },
-      { src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, sizes: '1280x720', type: 'image/jpeg' },
-    ],
-  });
-
-  // Set 'playing' immediately — don't wait for the play event.
-  // Chrome on Android checks this state when the page goes to background;
-  // if it's still 'none' the OS treats the session as inactive and suspends it.
-  navigator.mediaSession.playbackState = 'playing';
-
-  navigator.mediaSession.setActionHandler('play',  () => { player.play(); navigator.mediaSession.playbackState = 'playing'; });
-  navigator.mediaSession.setActionHandler('pause', () => { player.pause(); navigator.mediaSession.playbackState = 'paused'; });
-  navigator.mediaSession.setActionHandler('seekbackward', d => {
-    player.currentTime = Math.max(0, player.currentTime - (d.seekOffset || 10));
-  });
-  navigator.mediaSession.setActionHandler('seekforward', d => {
-    player.currentTime = Math.min(player.duration || Infinity, player.currentTime + (d.seekOffset || 10));
-  });
-  try {
-    navigator.mediaSession.setActionHandler('seekto', d => {
-      if (d.fastSeek && 'fastSeek' in player) player.fastSeek(d.seekTime);
-      else player.currentTime = d.seekTime;
-    });
-  } catch { /* seekto not supported in all browsers */ }
-
-  player.addEventListener('play',  () => { navigator.mediaSession.playbackState = 'playing'; });
-  player.addEventListener('pause', () => { navigator.mediaSession.playbackState = 'paused'; });
-  player.addEventListener('ended', () => { navigator.mediaSession.playbackState = 'none'; });
-
-  function updatePosition() {
-    if (!player.duration || isNaN(player.duration)) return;
-    try {
-      navigator.mediaSession.setPositionState({
-        duration:     player.duration,
-        playbackRate: player.playbackRate,
-        position:     player.currentTime,
-      });
-    } catch { /* setPositionState not supported in all browsers */ }
-  }
-  player.addEventListener('loadedmetadata', updatePosition);
-  player.addEventListener('timeupdate', updatePosition);
-}
-
-// ─── Mobile background audio ──────────────────────────────────────────────────
-// iOS and Android both pause <video> in background but keep <audio> alive.
-// Strategy: muted <video> for visuals + hidden <audio> for sound.
-function setupMobileAudio(videoId, v, video, bgAudio) {
-  if (!bgAudio) return;
-
-  // iOS 17.5+ Audio Session API: tells iOS to route this audio through the
-  // AVAudioSession "playback" category so it survives screen lock / home press.
-  // Only available in Safari; silently ignored on all other browsers.
-  if ('audioSession' in navigator) {
-    navigator.audioSession.type = 'playback';
-  }
-
-  // Audio was started (muted) from the click handler; unmute it now.
-  bgAudio.muted = false;
-  // Sync to where the video is starting (both begin at 0 normally).
-  bgAudio.currentTime = video.currentTime;
-
-  // Mirror video controls → audio element
-  video.addEventListener('play',       () => bgAudio.play().catch(() => {}));
-  video.addEventListener('pause',      () => bgAudio.pause());
-  video.addEventListener('seeked',     () => { bgAudio.currentTime = video.currentTime; });
-  video.addEventListener('ratechange', () => { bgAudio.playbackRate = video.playbackRate; });
-
-  // Track whether the video was playing when the user left — so we don't
-  // resume a video the user intentionally paused before pressing home.
-  let wasPlayingBeforeHide = false;
-  const onVisibility = () => {
-    if (document.hidden) {
-      wasPlayingBeforeHide = !video.paused;
-    } else if (wasPlayingBeforeHide) {
-      // Audio kept playing in background; sync video back to it and resume.
-      video.currentTime = bgAudio.currentTime;
-      video.play().catch(() => {});
-    }
-  };
-  document.addEventListener('visibilitychange', onVisibility);
-
-  // Clean up when navigating away
-  window.addEventListener('hashchange', () => {
-    bgAudio.pause();
-    bgAudio.src = '';
-    document.removeEventListener('visibilitychange', onVisibility);
-  }, { once: true });
-
-  // Register the <audio> (not the muted <video>) with the OS for lock-screen controls
-  setupMediaSession(videoId, v, bgAudio);
-}
 
 // ─── Views ────────────────────────────────────────────────────────────────────
 async function homeView() {
@@ -368,38 +230,21 @@ async function watchView(videoId) {
   stopObserver();
   app.innerHTML = spinner();
 
-  // Consume the audio element pre-created in the click handler.
-  // If null (direct URL / programmatic navigation) fall back to normal
-  // unmuted <video> — background audio won't work but at least sound plays.
-  let bgAudio = null;
-  if (IS_MOBILE) {
-    bgAudio = _pendingBgAudio;
-    _pendingBgAudio = null;
-  }
-
   try {
     const v = await api.video(videoId);
-
-    const playerHtml = v.streamable
-      ? `<video
-           id="player"
-           src="/api/stream/${esc(videoId)}"
-           controls autoplay preload="auto"
-           playsinline${bgAudio ? ' muted' : ''}
-           class="player"
-         ></video>`
-      : `<iframe
-           id="player"
-           src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
-           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-           allowfullscreen
-           class="player"
-         ></iframe>`;
 
     app.innerHTML = `
       <div class="watch-layout">
         <div class="watch-main">
-          <div class="player-wrap${v.isShort ? ' player-wrap--short' : ''}">${playerHtml}</div>
+          <div class="player-wrap${v.isShort ? ' player-wrap--short' : ''}">
+            <iframe
+              id="player"
+              src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              allowfullscreen
+              class="player"
+            ></iframe>
+          </div>
           <div class="watch-meta">
             <h1 class="watch-title">${esc(v.title)}</h1>
             <p class="watch-channel">${esc(v.channel)}</p>
@@ -417,44 +262,9 @@ async function watchView(videoId) {
         </aside>
       </div>`;
 
-    if (v.streamable) {
-      const player = document.getElementById('player');
-      if (player) {
-        player.addEventListener('error', () => {
-          if (player.readyState === 0) {
-            // Stream proxy failed — stop background audio and fall back to
-            // YouTube embed which carries its own audio track.
-            if (bgAudio) { bgAudio.pause(); bgAudio.src = ''; }
-            player.parentElement.innerHTML = `<iframe
-              id="player"
-              src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-              allowfullscreen
-              class="player"
-            ></iframe>`;
-          }
-        });
-
-        if (bgAudio) {
-          // Mobile: audio element carries the sound and stays alive in background.
-          // Video is muted (visuals only); hardware volume buttons control audio.
-          setupMobileAudio(videoId, v, player, bgAudio);
-        } else {
-          // Android / desktop: single <video> with Media Session for OS controls.
-          if (bgAudio) { bgAudio.pause(); bgAudio.src = ''; } // shouldn't happen, safety
-          setupMediaSession(videoId, v, player);
-        }
-      }
-    } else if (bgAudio) {
-      // Video fell back to iframe — audio element not needed
-      bgAudio.pause();
-      bgAudio.src = '';
-    }
-
     if (v.title) document.title = `${v.title} – FreeView`;
 
   } catch (e) {
-    if (bgAudio) { bgAudio.pause(); bgAudio.src = ''; }
     app.innerHTML = msg('Could not load video', e.message, true);
   }
 }
