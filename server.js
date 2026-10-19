@@ -74,6 +74,9 @@ async function workerMain() {
   }
 
   // ─── Innertube singleton ──────────────────────────────────────────────────
+  // generate_session_locally: false — fetches a real visitor token from YouTube
+  // on first use. Locally-generated tokens are rejected with 403 from datacenter
+  // IPs (Render). A real session fetched from YouTube works from any IP.
   let _yt = null;
   let _ytPromise = null;
 
@@ -82,12 +85,16 @@ async function workerMain() {
     if (_ytPromise) return _ytPromise;
     _ytPromise = (async () => {
       installEvaluator();
-      const yt = await Innertube.create({ generate_session_locally: true });
+      const yt = await Innertube.create({ generate_session_locally: false });
       _yt = yt;
       return yt;
     })().catch(err => { _ytPromise = null; throw err; });
     return _ytPromise;
   }
+
+  // Reset the session so the next call to getYT() creates a fresh one.
+  // Called when YouTube returns 403 (expired / invalid session).
+  function resetYT() { _yt = null; _ytPromise = null; }
 
   // ─── Single-flight + TTL cache ────────────────────────────────────────────
   // Single-flight: if two requests miss the cache simultaneously, only ONE
@@ -405,6 +412,10 @@ async function workerMain() {
       });
       res.json(data);
     } catch (e) {
+      if (e.message?.includes('403') || e.message?.includes('status code')) {
+        console.warn(wid, '[/api/home] session rejected, resetting…');
+        resetYT();
+      }
       console.error(wid, '[/api/home]', e.message);
       res.status(500).json({ error: e.message });
     }
@@ -427,6 +438,10 @@ async function workerMain() {
       });
       res.json(data);
     } catch (e) {
+      if (e.message?.includes('403') || e.message?.includes('status code')) {
+        console.warn(wid, '[/api/search] session rejected, resetting…');
+        resetYT();
+      }
       console.error(wid, '[/api/search]', e.message);
       res.status(500).json({ error: e.message });
     }
@@ -440,9 +455,18 @@ async function workerMain() {
     try {
       const info = await withCache(`v:${id}`, 60 * 60_000, async () => {
         const yt = await getYT();
-        return fmtVideoInfo(
-          await withTimeout(yt.getInfo(id), 15_000, `getInfo:${id}`)
-        );
+        try {
+          return fmtVideoInfo(await withTimeout(yt.getInfo(id), 15_000, `getInfo:${id}`));
+        } catch (e) {
+          // Session expired or rejected (403) — reset and retry once with a fresh session
+          if (e.message?.includes('403') || e.message?.includes('status code')) {
+            console.warn(wid, '[/api/video] session rejected, resetting…');
+            resetYT();
+            const yt2 = await getYT();
+            return fmtVideoInfo(await withTimeout(yt2.getInfo(id), 15_000, `getInfo:${id}:retry`));
+          }
+          throw e;
+        }
       });
       res.json(info);
     } catch (e) {
