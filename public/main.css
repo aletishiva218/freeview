@@ -410,3 +410,16 @@ html { overflow-x: hidden; }
 
 /* ── Native video element chrome ── */
 video::-webkit-media-controls-panel { background: #111; }
+
+/* ── Watch-page metadata error ── */
+.watch-meta .msg { padding: 16px 0 8px; text-align: left; }
+.retry-btn {
+  padding: 8px 18px;
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  cursor: pointer;
+}
+.retry-btn:hover { background: var(--border); }

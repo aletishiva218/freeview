@@ -359,24 +359,34 @@ async function workerMain() {
 
   // Last resort when every per-video Innertube endpoint is blocked:
   // oEmbed (public, not IP-blocked) gives title + channel; a search for the
-  // title (search is not blocked) gives views/duration from the matching
-  // result and a list of related videos.
-  async function getInfoFromOEmbed(yt, id) {
-    const r = await fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}&format=json`);
+  // title (search is not blocked) gives views/duration/description snippet
+  // from the matching result and a list of related videos.
+  async function getInfoFromOEmbed(yt, id, timing) {
+    let t = Date.now();
+    const r = await withTimeout(fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}&format=json`),
+      8_000, `oembed:${id}`);
     if (!r.ok) throw new Error(`oEmbed failed with status code ${r.status}`);
     const o = await r.json();
+    timing.oembed = Date.now() - t;
 
-    let self = null;
-    let related = [];
+    let self = null, raw = null, related = [];
+    t = Date.now();
     try {
-      const sr = await yt.search(o.title);
+      const sr = await withTimeout(yt.search(o.title), 10_000, `search:${id}`);
+      raw  = (sr.results || []).find(n => n.id === id || n.video_id === id) || null;
       const vids = (sr.results || []).flatMap(extractVideos);
       self = vids.find(v => v.id === id) || null;
       related = vids.filter(v => v.id !== id).slice(0, 20);
     } catch (e) {
       console.warn(wid, `[/api/video] related search failed for ${id}: ${e.message}`);
     }
+    timing.search = Date.now() - t;
+
+    const description =
+      raw?.description_snippet?.text
+      || raw?.snippets?.map(sn => sn.text?.text || '').filter(Boolean).join('\n')
+      || '';
 
     return {
       id,
@@ -384,12 +394,20 @@ async function workerMain() {
       channel:     o.author_name || '',
       channelId:   self?.channelId || '',
       views:       self?.views || '',
-      description: '',
+      published:   self?.published || '',
+      description,
       duration:    self?.duration || '',
       isShort:     !!self?.isShort,
       related,
     };
   }
+
+  // Circuit breaker for the per-video Innertube endpoints. On datacenter IPs
+  // they 403 on every call, so after one failure we skip them for a while
+  // instead of paying for the failed round-trips on every video.
+  const BLOCK_MS = 30 * 60_000;
+  let playerBlockedUntil = 0;
+  let nextBlockedUntil   = 0;
 
   // ─── Express ──────────────────────────────────────────────────────────────
   const app = express();
@@ -500,26 +518,45 @@ async function workerMain() {
     if (!/^[a-zA-Z0-9_-]{11}$/.test(id))
       return res.status(400).json({ error: 'Invalid video ID' });
     try {
+      const timing = {};
       const info = await withCache(`v:${id}`, 60 * 60_000, async () => {
+        let t = Date.now();
         const yt = await getYT();
-        try {
-          return fmtVideoInfo(await withTimeout(yt.getInfo(id), 15_000, `getInfo:${id}`));
-        } catch (e) {
-          if (!is403(e)) throw e;
-          // YouTube blocks the per-video endpoints (/player, and often /next)
-          // from datacenter IPs (Render) with 403. Playback uses the embed
-          // iframe, so we only need metadata — try progressively less
-          // YouTube-dependent sources until one works.
-          console.warn(wid, `[/api/video] getInfo rejected for ${id}: ${e.message}`);
+        timing.session = Date.now() - t;
+
+        if (Date.now() >= playerBlockedUntil) {
+          t = Date.now();
+          try {
+            return fmtVideoInfo(await withTimeout(yt.getInfo(id), 8_000, `getInfo:${id}`));
+          } catch (e) {
+            if (!is403(e)) throw e;
+            // YouTube blocks the per-video endpoints (/player, and usually
+            // /next) from datacenter IPs (Render) with 403. Playback uses the
+            // embed iframe, so we only need metadata — fall back below.
+            playerBlockedUntil = Date.now() + BLOCK_MS;
+            console.warn(wid, `[/api/video] getInfo rejected for ${id}: ${e.message}`);
+          } finally {
+            timing.getinfo = Date.now() - t;
+          }
         }
-        try {
-          const info = fmtVideoInfo(await withTimeout(getInfoFromNext(yt, id), 10_000, `next:${id}`), id);
-          if (info.title) return info;
-        } catch (e) {
-          console.warn(wid, `[/api/video] /next failed for ${id}: ${e.message}`);
+
+        if (Date.now() >= nextBlockedUntil) {
+          t = Date.now();
+          try {
+            const info = fmtVideoInfo(await withTimeout(getInfoFromNext(yt, id), 8_000, `next:${id}`), id);
+            if (info.title) return info;
+          } catch (e) {
+            if (is403(e)) nextBlockedUntil = Date.now() + BLOCK_MS;
+            console.warn(wid, `[/api/video] /next failed for ${id}: ${e.message}`);
+          } finally {
+            timing.next = Date.now() - t;
+          }
         }
-        return await withTimeout(getInfoFromOEmbed(yt, id), 15_000, `oembed:${id}`);
+
+        return await getInfoFromOEmbed(yt, id, timing);
       });
+      res.set('Server-Timing',
+        Object.entries(timing).map(([k, v]) => `${k};dur=${v}`).join(', ') || 'cache;dur=0');
       res.json(info);
     } catch (e) {
       console.error(wid, '[/api/video]', e.message);

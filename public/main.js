@@ -22,9 +22,20 @@ function msg(text, sub = '', isError = false) {
 }
 
 // ─── API ──────────────────────────────────────────────────────────────────────
-async function apiFetch(url) {
-  const r = await fetch(url);
-  const json = await r.json();
+// timeoutMs guards against a request that never resolves (e.g. a stalled
+// connection while Render wakes the server) leaving a spinner up forever.
+async function apiFetch(url, timeoutMs = 60_000) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let r;
+  try {
+    r = await fetch(url, { signal: ctrl.signal });
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'Request timed out' : e.message);
+  } finally {
+    clearTimeout(timer);
+  }
+  const json = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(json.error || `HTTP ${r.status}`);
   return json;
 }
@@ -32,7 +43,7 @@ async function apiFetch(url) {
 const api = {
   home:   (page = 1) => apiFetch(`/api/home${page > 1 ? `?page=${page}` : ''}`),
   search: (q, page = 1) => apiFetch(`/api/search?q=${encodeURIComponent(q)}${page > 1 ? `&page=${page}` : ''}`),
-  video:  (id) => apiFetch(`/api/video/${encodeURIComponent(id)}`),
+  video:  (id) => apiFetch(`/api/video/${encodeURIComponent(id)}`, 45_000),
 };
 
 // ─── Browser cache (localStorage) ────────────────────────────────────────────
@@ -248,34 +259,55 @@ async function watchView(videoId) {
       <aside class="watch-related" id="watch-related"></aside>
     </div>`;
 
+  loadWatchMeta(videoId);
+}
+
+// Fetches title/description/related for the watch page. Retries once on its
+// own, then shows a Retry button rather than leaving the area blank.
+async function loadWatchMeta(videoId, attempt = 1) {
+  const stillHere = () =>
+    document.getElementById('player') && parseHash().params.get('v') === videoId;
+
+  const meta = document.getElementById('watch-meta');
+  if (meta) meta.innerHTML = '<div class="spinner spinner--sm"></div>';
+
+  let v;
   try {
-    const v = await api.video(videoId);
-
-    // User navigated away while the request was in flight
-    if (!document.getElementById('player') || parseHash().params.get('v') !== videoId) return;
-
-    if (v.isShort) document.getElementById('player-wrap').classList.add('player-wrap--short');
-
-    document.getElementById('watch-meta').innerHTML = `
-      <h1 class="watch-title">${esc(v.title)}</h1>
-      <p class="watch-channel">${esc(v.channel)}</p>
-      <p class="watch-stats">${esc([v.views, v.duration].filter(Boolean).join(' · '))}</p>
-      ${v.description ? `
-        <details class="watch-desc">
-          <summary>Description</summary>
-          <pre>${esc(v.description)}</pre>
-        </details>` : ''}`;
-
-    document.getElementById('watch-related').innerHTML = v.related.length ? `
-      <p class="watch-related-heading">Up next</p>
-      ${v.related.map(r => videoCard(r, true)).join('')}` : '';
-
-    if (v.title) document.title = `${v.title} – FreeView`;
-
+    v = await api.video(videoId);
   } catch (e) {
-    const meta = document.getElementById('watch-meta');
-    if (meta) meta.innerHTML = '';
+    if (!stillHere()) return;
+    if (attempt < 2) return loadWatchMeta(videoId, attempt + 1);
+    document.getElementById('watch-meta').innerHTML = `
+      <div class="msg error">
+        <strong>Could not load video details</strong>${esc(e.message)}
+      </div>
+      <button type="button" class="retry-btn" id="meta-retry">Retry</button>`;
+    document.getElementById('meta-retry')
+      .addEventListener('click', () => loadWatchMeta(videoId));
+    return;
   }
+
+  // User navigated away while the request was in flight
+  if (!stillHere()) return;
+
+  if (v.isShort) document.getElementById('player-wrap').classList.add('player-wrap--short');
+
+  document.getElementById('watch-meta').innerHTML = `
+    <h1 class="watch-title">${esc(v.title)}</h1>
+    <p class="watch-channel">${esc(v.channel)}</p>
+    <p class="watch-stats">${esc([v.views, v.published, v.duration].filter(Boolean).join(' · '))}</p>
+    ${v.description ? `
+      <details class="watch-desc">
+        <summary>Description</summary>
+        <pre>${esc(v.description)}</pre>
+      </details>` : ''}`;
+
+  const related = v.related || [];
+  document.getElementById('watch-related').innerHTML = related.length ? `
+    <p class="watch-related-heading">Up next</p>
+    ${related.map(r => videoCard(r, true)).join('')}` : '';
+
+  if (v.title) document.title = `${v.title} – FreeView`;
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
