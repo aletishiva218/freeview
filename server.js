@@ -2,7 +2,7 @@ import cluster from 'cluster';
 import { cpus } from 'os';
 import express from 'express';
 import compression from 'compression';
-import { Innertube, Platform, YT } from 'youtubei.js';
+import { Innertube, Platform } from 'youtubei.js';
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -240,7 +240,7 @@ async function workerMain() {
     return v ? [v] : [];
   }
 
-  function fmtVideoInfo(info, fallbackId = '') {
+  function fmtVideoInfo(info) {
     const b  = info.basic_info  || {};
     const pi = info.primary_info   || {};
     const si = info.secondary_info || {};
@@ -275,9 +275,9 @@ async function workerMain() {
 
     const views =
       b.view_count
-        ? Number(b.view_count).toLocaleString() + ' views'
+        ? Number(b.view_count).toLocaleString('en-US') + ' views'
         : pi.view_count?.original_view_count
-          ? Number(pi.view_count.original_view_count).toLocaleString() + ' views'
+          ? Number(pi.view_count.original_view_count).toLocaleString('en-US') + ' views'
           : pi.view_count?.short_view_count?.text || '';
 
     const description =
@@ -289,11 +289,12 @@ async function workerMain() {
     const isShort = durSec > 0 && durSec <= 60;
 
     return {
-      id: b.id || fallbackId,
+      id: b.id || '',
       title,
       channel,
       channelId,
       views,
+      published: pi.relative_date?.text || pi.published?.text || '',
       description,
       duration: formatDuration(durSec),
       isShort,
@@ -344,20 +345,7 @@ async function workerMain() {
     return cur;
   }
 
-  function is403(e) {
-    return e?.message?.includes('403') || e?.message?.includes('status code');
-  }
-
-  // Builds a VideoInfo from the /next response alone (empty player response).
-  // primary_info, secondary_info and watch_next_feed are all populated from /next.
-  async function getInfoFromNext(yt, id) {
-    const next = await yt.actions.execute('/next', {
-      videoId: id, racyCheckOk: true, contentCheckOk: true,
-    });
-    return new YT.VideoInfo([{ data: {} }, next], yt.actions, '');
-  }
-
-  // Last resort when every per-video Innertube endpoint is blocked:
+  // Fallback for when the per-video Innertube endpoints are blocked:
   // oEmbed (public, not IP-blocked) gives title + channel; a search for the
   // title (search is not blocked) gives views/duration/description snippet
   // from the matching result and a list of related videos.
@@ -402,12 +390,11 @@ async function workerMain() {
     };
   }
 
-  // Circuit breaker for the per-video Innertube endpoints. On datacenter IPs
-  // they 403 on every call, so after one failure we skip them for a while
-  // instead of paying for the failed round-trips on every video.
+  // Circuit breaker for getInfo. On datacenter IPs (Render) YouTube either
+  // 403s or stalls the per-video endpoints (/player, /next) until timeout, so
+  // after one failure we skip getInfo for a while and go straight to oEmbed.
   const BLOCK_MS = 30 * 60_000;
-  let playerBlockedUntil = 0;
-  let nextBlockedUntil   = 0;
+  let infoBlockedUntil = 0;
 
   // ─── Express ──────────────────────────────────────────────────────────────
   const app = express();
@@ -524,36 +511,24 @@ async function workerMain() {
         const yt = await getYT();
         timing.session = Date.now() - t;
 
-        if (Date.now() >= playerBlockedUntil) {
-          t = Date.now();
-          try {
-            return fmtVideoInfo(await withTimeout(yt.getInfo(id), 8_000, `getInfo:${id}`));
-          } catch (e) {
-            if (!is403(e)) throw e;
-            // YouTube blocks the per-video endpoints (/player, and usually
-            // /next) from datacenter IPs (Render) with 403. Playback uses the
-            // embed iframe, so we only need metadata — fall back below.
-            playerBlockedUntil = Date.now() + BLOCK_MS;
-            console.warn(wid, `[/api/video] getInfo rejected for ${id}: ${e.message}`);
-          } finally {
-            timing.getinfo = Date.now() - t;
-          }
-        }
+        if (Date.now() < infoBlockedUntil) return getInfoFromOEmbed(yt, id, timing);
 
-        if (Date.now() >= nextBlockedUntil) {
-          t = Date.now();
-          try {
-            const info = fmtVideoInfo(await withTimeout(getInfoFromNext(yt, id), 8_000, `next:${id}`), id);
-            if (info.title) return info;
-          } catch (e) {
-            if (is403(e)) nextBlockedUntil = Date.now() + BLOCK_MS;
-            console.warn(wid, `[/api/video] /next failed for ${id}: ${e.message}`);
-          } finally {
-            timing.next = Date.now() - t;
-          }
-        }
+        // Start the fallback in parallel so a stalled getInfo costs at most
+        // its timeout, not timeout + fallback.
+        const fallback = getInfoFromOEmbed(yt, id, timing);
+        fallback.catch(() => {}); // handled below if needed
 
-        return await getInfoFromOEmbed(yt, id, timing);
+        t = Date.now();
+        try {
+          const info = fmtVideoInfo(await withTimeout(yt.getInfo(id), 5_000, `getInfo:${id}`));
+          if (info.title) return info;
+        } catch (e) {
+          infoBlockedUntil = Date.now() + BLOCK_MS;
+          console.warn(wid, `[/api/video] getInfo failed for ${id}, using oEmbed for ${BLOCK_MS / 60_000} min: ${e.message}`);
+        } finally {
+          timing.getinfo = Date.now() - t;
+        }
+        return fallback;
       });
       res.set('Server-Timing',
         Object.entries(timing).map(([k, v]) => `${k};dur=${v}`).join(', ') || 'cache;dur=0');
