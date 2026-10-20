@@ -41,10 +41,11 @@ async function apiFetch(url, timeoutMs = 60_000) {
 }
 
 const api = {
-  home:   (page = 1, cats = []) => {
+  home:   (page = 1, cats = [], refresh = 0) => {
     const qs = new URLSearchParams();
     if (page > 1) qs.set('page', page);
     if (cats.length) qs.set('cats', cats.join(','));
+    if (refresh > 0) qs.set('r', refresh);
     const q = qs.toString();
     return apiFetch(`/api/home${q ? `?${q}` : ''}`);
   },
@@ -114,6 +115,19 @@ function categoryLabel(id) {
   return CATEGORIES.find(c => c.id === id)?.label || id;
 }
 
+// How many times the home feed was refreshed in this tab. Each value maps to a
+// different set of videos from the same categories (see feedPlan on the server).
+// Per-tab so coming back from a video shows the same feed you left.
+const FeedRefresh = {
+  KEY: 'fv:refresh',
+  get() {
+    try { return Math.max(0, parseInt(sessionStorage.getItem(this.KEY)) || 0); } catch { return 0; }
+  },
+  set(n) {
+    try { sessionStorage.setItem(this.KEY, String(n)); } catch { /* private mode */ }
+  },
+};
+
 // ─── Infinite scroll ──────────────────────────────────────────────────────────
 let _observer = null;
 
@@ -176,7 +190,8 @@ async function homeView() {
 
   const cats = Prefs.getCategories();
   if (cats === null) return categoriesView(true); // first visit: ask once
-  const cacheKey = `home:${cats.join(',')}`;
+  const refresh  = FeedRefresh.get();
+  const cacheKey = `home:${cats.join(',')}:${refresh}`;
   const header   = homeHeader(cats);
 
   // page starts at 2 — page 1 is always the initial/refresh load
@@ -192,7 +207,7 @@ async function homeView() {
     app.appendChild(loader);
 
     try {
-      const { videos, hasMore } = await api.home(page, cats);
+      const { videos, hasMore } = await api.home(page, cats, refresh);
       loader.remove();
       document.getElementById('main-grid')
         ?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
@@ -213,7 +228,7 @@ async function homeView() {
     if (cached.data.hasMore) onScrollEnd(loadNext);
 
     // Always fetch fresh page 1 in background; update grid only if user hasn't scrolled yet
-    api.home(1, cats).then(({ videos, hasMore }) => {
+    api.home(1, cats, refresh).then(({ videos, hasMore }) => {
       if (!videos.length) return;
       BrowserCache.set(cacheKey, { videos, hasMore });
       const stillHome = ['home', ''].includes(parseHash().path) && document.getElementById('main-grid');
@@ -226,10 +241,12 @@ async function homeView() {
     }).catch(() => { /* keep cached grid on network error */ });
 
   } else {
-    // First visit — show spinner, fetch, then cache
-    app.innerHTML = spinner();
+    // First visit (or a refresh) — show spinner under the header, fetch, then cache
+    app.innerHTML = header + spinner();
+    setRefreshing(true);
     try {
-      const { videos, hasMore } = await api.home(1, cats);
+      const { videos, hasMore } = await api.home(1, cats, refresh);
+      if (FeedRefresh.get() !== refresh || !['home', ''].includes(parseHash().path)) return;
       if (!videos.length) {
         app.innerHTML = header + msg('Nothing to show', 'The feed returned no videos.');
         return;
@@ -240,6 +257,7 @@ async function homeView() {
     } catch (e) {
       app.innerHTML = header + msg('Could not load home feed', e.message, true);
     }
+    setRefreshing(false);
   }
 }
 
@@ -248,15 +266,37 @@ function homeHeader(cats) {
   if (!cats.length) {
     return `<div class="feed-head">
       <p class="section-title">Trending</p>
-      <a class="feed-edit" href="#categories">Choose categories</a>
+      <div class="feed-actions">${refreshButton()}<a class="feed-edit" href="#categories">Choose categories</a></div>
     </div>`;
   }
   return `<div class="feed-head">
     <p class="section-title">For you</p>
     <div class="feed-cats">${cats.map(c => `<span class="feed-cat">${esc(categoryLabel(c))}</span>`).join('')}</div>
-    <a class="feed-edit" href="#categories">Edit</a>
+    <div class="feed-actions">${refreshButton()}<a class="feed-edit" href="#categories">Edit</a></div>
   </div>`;
 }
+
+function refreshButton() {
+  return `<button type="button" class="feed-refresh" id="feed-refresh" aria-label="Refresh videos">
+    <span class="feed-refresh-icon" aria-hidden="true">&#8635;</span> Refresh
+  </button>`;
+}
+
+function setRefreshing(on) {
+  const btn = document.getElementById('feed-refresh');
+  if (!btn) return;
+  btn.disabled = on;
+  btn.classList.toggle('is-loading', on);
+}
+
+// Refresh: move to the next set of videos for the same categories.
+app.addEventListener('click', e => {
+  const btn = e.target.closest('#feed-refresh');
+  if (!btn || btn.disabled) return;
+  FeedRefresh.set(FeedRefresh.get() + 1);
+  window.scrollTo(0, 0);
+  homeView();
+});
 
 // Category picker. `firstVisit` shows Skip/Continue; otherwise Cancel/Save.
 function categoriesView(firstVisit = false) {
@@ -310,6 +350,7 @@ function categoriesView(firstVisit = false) {
   primary.addEventListener('click', () => {
     // Keep the canonical order so the same choice always maps to the same feed/cache.
     Prefs.setCategories(CATEGORIES.map(c => c.id).filter(id => selected.has(id)));
+    FeedRefresh.set(0);
     goHome();
   });
 

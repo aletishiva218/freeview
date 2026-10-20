@@ -398,36 +398,51 @@ async function workerMain() {
 
   // ─── Category feeds ───────────────────────────────────────────────────────
   // YouTube has no keyless "videos in category X" feed that works from Render,
-  // so each category maps to a search query (search is not IP-blocked).
-  // Results are cached per category+page and shared by every user, so the
+  // so each category maps to search queries (search is not IP-blocked).
+  // Results are cached per query+page and shared by every user, so the
   // YouTube load is independent of how many users pick which categories.
+  //
+  // Each category has FEED_VARIANTS queries so "Refresh" can show different
+  // videos from the same categories while the cache stays in place.
+  const FEED_VARIANTS = 4;
   const CATEGORY_QUERIES = {
-    film:          'official movie trailer',
-    autos:         'car review',
-    music:         'new music video',
-    pets:          'funny pets animals',
-    sports:        'sports highlights',
-    travel:        'travel vlog',
-    gaming:        'gaming',
-    people:        'daily vlog',
-    comedy:        'comedy sketch',
-    entertainment: 'entertainment show',
-    news:          'news today',
-    howto:         'how to diy tutorial',
-    education:     'educational explained',
-    science:       'science technology',
-    nonprofits:    'nonprofit charity activism',
+    film:          ['official movie trailer', 'new movie teaser', 'animated short film', 'short film'],
+    autos:         ['car review', 'bike review', 'supercar', 'car modification'],
+    music:         ['new music video', 'top songs this week', 'live performance song', 'official audio song'],
+    pets:          ['funny pets animals', 'cute dogs', 'funny cats', 'wildlife animals documentary'],
+    sports:        ['sports highlights', 'cricket highlights', 'basketball highlights', 'tennis highlights'],
+    travel:        ['travel vlog', 'travel guide', 'road trip vlog', 'beautiful places to visit'],
+    gaming:        ['gaming', 'minecraft', 'gta gameplay', 'game review'],
+    people:        ['daily vlog', 'day in my life', 'family vlog', 'storytime'],
+    comedy:        ['comedy sketch', 'stand up comedy', 'funny videos', 'comedy skit'],
+    entertainment: ['entertainment show', 'celebrity interview', 'reality show', 'late night talk show'],
+    news:          ['news today', 'breaking news', 'world news', 'politics news'],
+    howto:         ['how to diy tutorial', 'makeup tutorial', 'cooking recipe', 'life hacks'],
+    education:     ['educational explained', 'history documentary', 'math explained', 'english lesson'],
+    science:       ['science technology', 'tech review', 'space science', 'science experiment'],
+    nonprofits:    ['nonprofit charity activism', 'social cause documentary', 'climate activism', 'volunteering charity'],
   };
+  // Used for the general feed after a refresh (refresh 0 keeps the original feed).
+  const TRENDING_QUERIES = ['trending videos', 'viral videos', 'popular videos today', 'most watched videos this week'];
+
+  // Refresh cycle: refreshes 0–3 use each query variant from page 1, 4–7 start
+  // one page deeper, and so on for 20 refreshes before the cycle repeats.
+  // Cached results expire after 10 min, so later cycles show new videos anyway.
+  const REFRESH_CYCLE = FEED_VARIANTS * 5;
+  function feedPlan(page, refresh) {
+    const r = ((refresh % REFRESH_CYCLE) + REFRESH_CYCLE) % REFRESH_CYCLE;
+    return { variant: r % FEED_VARIANTS, page: page + Math.floor(r / FEED_VARIANTS) };
+  }
 
   function parseCategories(raw) {
     const ids = String(raw || '').split(',').map(c => c.trim()).filter(c => CATEGORY_QUERIES[c]);
     return [...new Set(ids)].sort();
   }
 
-  function getCategoryPage(id, page) {
-    return withCache(`cat:${id}:${page}`, 10 * 60_000, async () => {
+  function getQueryPage(query, page) {
+    return withCache(`q:${query}:${page}`, 10 * 60_000, async () => {
       const yt = await getYT();
-      const sr = await getSearchPage(yt, CATEGORY_QUERIES[id], page, `cont:cat:${id}`, { type: 'video' });
+      const sr = await getSearchPage(yt, query, page, `cont:q:${query}`, { type: 'video' });
       if (!sr) return { videos: [], hasMore: false };
       return {
         videos: (sr.videos || []).map(fmtVideo).filter(Boolean),
@@ -436,16 +451,31 @@ async function workerMain() {
     });
   }
 
+  // Deterministic shuffle so a given refresh always produces the same order
+  // (keeps browser-side caching and pagination consistent).
+  function seededShuffle(arr, seed) {
+    let x = (seed * 2654435761) >>> 0 || 1;
+    const rand = () => { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; return (x >>> 0) / 4294967296; };
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
   // Mixes one page from each selected category round-robin, so every
   // category is represented near the top. A failing category is skipped
   // rather than failing the whole feed.
-  async function getCategoryFeed(cats, page) {
-    const results = await Promise.allSettled(cats.map(c => getCategoryPage(c, page)));
+  async function getCategoryFeed(cats, page, refresh) {
+    const plan = feedPlan(page, refresh);
+    const results = await Promise.allSettled(
+      cats.map(c => getQueryPage(CATEGORY_QUERIES[c][plan.variant], plan.page)));
     const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value);
     if (!ok.length) throw results.find(r => r.status === 'rejected').reason;
 
     const perCat = Math.max(8, Math.ceil(48 / cats.length));
     const lists  = ok.map(r => r.videos.slice(0, perCat));
+    if (refresh > 0) lists.forEach((l, i) => seededShuffle(l, refresh * 31 + page * 7 + i));
     const seen   = new Set();
     const videos = [];
     for (let i = 0; lists.some(l => i < l.length); i++) {
@@ -455,6 +485,12 @@ async function workerMain() {
       }
     }
     return { videos, hasMore: ok.some(r => r.hasMore) };
+  }
+
+  async function getTrendingRefreshFeed(page, refresh) {
+    const plan = feedPlan(page, refresh);
+    const r = await getQueryPage(TRENDING_QUERIES[plan.variant], plan.page);
+    return { videos: seededShuffle(r.videos.slice(0, 40), refresh * 31 + page * 7), hasMore: r.hasMore };
   }
 
   // ─── Express ──────────────────────────────────────────────────────────────
@@ -494,13 +530,20 @@ async function workerMain() {
   // Home feed (10-min cache per page, single-flight)
   app.get('/api/home', async (req, res) => {
     const page = Math.max(1, Math.min(10, parseInt(req.query.page) || 1));
-    const cats = parseCategories(req.query.cats);
+    const cats    = parseCategories(req.query.cats);
+    const refresh = Math.max(0, Math.min(1000, parseInt(req.query.r) || 0));
     if (cats.length) {
       try {
-        return res.json(await getCategoryFeed(cats, page));
+        return res.json(await getCategoryFeed(cats, page, refresh));
       } catch (e) {
         console.error(wid, '[/api/home cats]', e.message);
         // Fall through to the general trending feed below.
+      }
+    } else if (refresh > 0) {
+      try {
+        return res.json(await getTrendingRefreshFeed(page, refresh));
+      } catch (e) {
+        console.error(wid, '[/api/home refresh]', e.message);
       }
     }
     try {
