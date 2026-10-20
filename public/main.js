@@ -11,14 +11,53 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
-function spinner() {
-  return '<div class="spinner"></div>';
+// ─── Skeletons (placeholders shaped like the content that is loading) ────────
+const SK_CARD = `<div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info">
+  <div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div>
+  <div class="sk sk-line sk-line--meta"></div></div></div>`;
+const SK_SHORT = `<div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info">
+  <div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--meta2"></div></div></div>`;
+const SK_COMPACT = `<div class="sk-compact"><div class="sk sk-thumb"></div><div class="sk-info">
+  <div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div>
+  <div class="sk sk-line sk-line--meta"></div></div></div>`;
+
+// A grid of placeholder cards (portrait ones for the Shorts grid).
+function skeletonGrid(shorts = false, count = shorts ? 12 : 12) {
+  return `<div class="grid${shorts ? ' grid--shorts' : ''}" aria-hidden="true">${
+    (shorts ? SK_SHORT : SK_CARD).repeat(count)}</div>`;
 }
+
+// Watch page: title, channel line and description placeholders.
+function skeletonWatchMeta() {
+  return `<div aria-hidden="true">
+    <div class="sk sk-watch-title"></div><div class="sk sk-watch-title2"></div>
+    <div class="sk-byline"><div class="sk sk-avatar"></div>
+      <div style="flex:1"><div class="sk sk-line" style="width:38%"></div><div class="sk sk-line sk-line--meta2" style="margin:0"></div></div></div>
+    <div class="sk sk-desc"></div></div>`;
+}
+
+function skeletonRelated(count = 8) {
+  return `<div class="sk sk-line" style="width:90px;height:18px;margin-bottom:14px" aria-hidden="true"></div>${SK_COMPACT.repeat(count)}`;
+}
+
+const MSG_ICONS = {
+  error:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>',
+  empty:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8.5 11h5"/></svg>',
+};
 
 function msg(text, sub = '', isError = false) {
   return `<div class="msg${isError ? ' error' : ''}">
-    <strong>${esc(text)}</strong>${sub ? esc(sub) : ''}
+    <div class="msg-icon" aria-hidden="true">${isError ? MSG_ICONS.error : MSG_ICONS.empty}</div>
+    <strong>${esc(text)}</strong>${sub ? `<p>${esc(sub)}</p>` : ''}
   </div>`;
+}
+
+// Channel avatar: first letter on a colour derived from the name (stable).
+function avatar(name) {
+  const n = String(name || '?').trim() || '?';
+  let h = 0;
+  for (const ch of n) h = (h * 31 + ch.codePointAt(0)) % 360;
+  return `<div class="watch-avatar" style="background:hsl(${h} 55% 42%)" aria-hidden="true">${esc([...n][0].toUpperCase())}</div>`;
 }
 
 // ─── Theme (System default / Light / Dark) ────────────────────────────────────
@@ -57,9 +96,10 @@ const Theme = {
     const root = document.documentElement;
     if (choice === 'system') root.removeAttribute('data-theme');
     else root.setAttribute('data-theme', choice);
-    // Browser UI (Android address bar etc.) follows the top bar colour.
+    // Browser UI (Android address bar etc.) follows the page colour (solid,
+    // unlike the translucent top bar, which some browsers would ignore).
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = getComputedStyle(document.getElementById('topbar')).backgroundColor;
+    if (meta) meta.content = getComputedStyle(document.body).backgroundColor;
     const btn = document.getElementById('theme-btn');
     btn.innerHTML = THEME_ICONS[choice];
     btn.setAttribute('aria-label', `Theme: ${THEME_LABELS[choice]}`);
@@ -258,7 +298,8 @@ function videoCard(v, compact = false) {
        ${v.isShort ? `data-id="${esc(v.id)}" data-title="${esc(v.title)}" data-views="${esc(v.views)}" data-thumb="${esc(v.thumbnail)}"` : ''}>
       <div class="card-thumb">
         <img src="${esc(v.thumbnail)}" alt="" loading="lazy" decoding="async"
-             onerror="this.style.opacity='0'"/>
+             onload="this.classList.add('is-loaded')"
+             onerror="this.parentNode.classList.add('thumb-error')"/>
         ${shortBadge}${durBadge}
       </div>
       <div class="card-info">
@@ -274,12 +315,12 @@ function videoGrid(videos, shortsOnly = false) {
   return `<div class="grid${shortsOnly ? ' grid--shorts' : ''}" id="main-grid">${videos.map(v => videoCard(v)).join('')}</div>`;
 }
 
-// Small spinner shown at the bottom while fetching the next page
-function pageLoader() {
+// Placeholder cards shown below the grid while fetching the next page
+function pageLoader(shorts = false) {
   const el = document.createElement('div');
   el.id = 'page-loader';
   el.className = 'page-loader';
-  el.innerHTML = '<div class="spinner spinner--sm"></div>';
+  el.innerHTML = skeletonGrid(shorts, shorts ? 6 : 4);
   return el;
 }
 
@@ -305,7 +346,7 @@ async function homeView() {
     loading = true;
     stopObserver();
 
-    const loader = pageLoader();
+    const loader = pageLoader(format === 'shorts');
     app.appendChild(loader);
 
     try {
@@ -325,7 +366,7 @@ async function homeView() {
   const cached = BrowserCache.get(cacheKey);
 
   if (cached) {
-    // Render cached data instantly — no spinner wait
+    // Render cached data instantly — no loading state
     app.innerHTML = `${header}${grid(cached.data.videos)}`;
     if (cached.data.hasMore) onScrollEnd(loadNext);
 
@@ -343,8 +384,8 @@ async function homeView() {
     }).catch(() => { /* keep cached grid on network error */ });
 
   } else {
-    // First visit (or a refresh) — show spinner under the header, fetch, then cache
-    app.innerHTML = header + spinner();
+    // First visit (or a refresh) — skeleton cards under the header, fetch, then cache
+    app.innerHTML = header + skeletonGrid(format === 'shorts');
     setRefreshing(true);
     try {
       const { videos, hasMore } = await api.home(1, cats, refresh, format);
@@ -381,12 +422,12 @@ function formatTabs(format) {
 function categoryHeader(cats) {
   if (!cats.length) {
     return `<div class="feed-head">
-      <p class="section-title">Trending</p>
+      <h1 class="section-title">Trending</h1>
       <div class="feed-actions">${refreshButton()}<a class="feed-edit" href="#categories">Choose categories</a></div>
     </div>`;
   }
   return `<div class="feed-head">
-    <p class="section-title">For you</p>
+    <h1 class="section-title">For you</h1>
     <div class="feed-cats">${cats.map(c => `<span class="feed-cat">${esc(categoryLabel(c))}</span>`).join('')}</div>
     <div class="feed-actions">${refreshButton()}<a class="feed-edit" href="#categories">Edit</a></div>
   </div>`;
@@ -441,6 +482,7 @@ function categoriesView(firstVisit = false) {
 
   app.innerHTML = `
     <div class="cat-picker">
+      <span class="cat-eyebrow">${firstVisit ? 'Welcome to FreeView' : 'Personalise'}</span>
       <h1 class="cat-title">${firstVisit ? 'What do you like to watch?' : 'Your categories'}</h1>
       <p class="cat-sub">Pick as many as you like. Your home feed will show these.
         ${firstVisit ? 'You can change them anytime.' : 'Choose none to see trending videos.'}</p>
@@ -500,8 +542,8 @@ async function searchView(q, format = 'all') {
   if (!FORMATS.some(f => f.id === format)) format = 'all';
   stopObserver();
   searchInput.value = q;
-  const header = `<p class="section-title">Results for &ldquo;${esc(q)}&rdquo;</p>${formatTabs(format)}`;
-  app.innerHTML = header + spinner();
+  const header = `<h1 class="section-title">Results for <q>${esc(q)}</q></h1>${formatTabs(format)}`;
+  app.innerHTML = header + skeletonGrid(format === 'shorts');
 
   let page    = 1;
   let loading = false;
@@ -511,7 +553,7 @@ async function searchView(q, format = 'all') {
     loading = true;
     stopObserver();
 
-    const loader = pageLoader();
+    const loader = pageLoader(format === 'shorts');
     if (page > 1) app.appendChild(loader);
 
     try {
@@ -566,9 +608,9 @@ async function watchView(videoId, isShortHint = false) {
             class="player"
           ></iframe>
         </div>
-        <div class="watch-meta" id="watch-meta"><div class="spinner spinner--sm"></div></div>
+        <div class="watch-meta" id="watch-meta">${skeletonWatchMeta()}</div>
       </div>
-      <aside class="watch-related" id="watch-related"></aside>
+      <aside class="watch-related" id="watch-related">${skeletonRelated()}</aside>
     </div>`;
 
   loadWatchMeta(videoId);
@@ -581,7 +623,9 @@ async function loadWatchMeta(videoId, attempt = 1) {
     document.getElementById('player') && parseHash().params.get('v') === videoId;
 
   const meta = document.getElementById('watch-meta');
-  if (meta) meta.innerHTML = '<div class="spinner spinner--sm"></div>';
+  if (meta) meta.innerHTML = skeletonWatchMeta();
+  const rel = document.getElementById('watch-related');
+  if (rel && !rel.querySelector('.card, .sk-compact')) rel.innerHTML = skeletonRelated();
 
   let v;
   try {
@@ -589,6 +633,7 @@ async function loadWatchMeta(videoId, attempt = 1) {
   } catch (e) {
     if (!stillHere()) return;
     if (attempt < 2) return loadWatchMeta(videoId, attempt + 1);
+    document.getElementById('watch-related').innerHTML = '';
     document.getElementById('watch-meta').innerHTML = `
       <div class="msg error">
         <strong>Could not load video details</strong>${esc(e.message)}
@@ -606,8 +651,13 @@ async function loadWatchMeta(videoId, attempt = 1) {
 
   document.getElementById('watch-meta').innerHTML = `
     <h1 class="watch-title">${esc(v.title)}</h1>
-    <p class="watch-channel">${esc(v.channel)}</p>
-    <p class="watch-stats">${esc([v.views, v.published, v.duration].filter(Boolean).join(' · '))}</p>
+    <div class="watch-byline">
+      ${avatar(v.channel)}
+      <div class="watch-byline-text">
+        <p class="watch-channel">${esc(v.channel)}</p>
+        <p class="watch-stats">${esc([v.views, v.published, v.duration].filter(Boolean).join(' · '))}</p>
+      </div>
+    </div>
     ${v.description ? `
       <details class="watch-desc">
         <summary>Description</summary>
@@ -616,7 +666,7 @@ async function loadWatchMeta(videoId, attempt = 1) {
 
   const related = v.related || [];
   document.getElementById('watch-related').innerHTML = related.length ? `
-    <p class="watch-related-heading">Up next</p>
+    <h2 class="watch-related-heading">Up next</h2>
     ${related.map(r => videoCard(r, true)).join('')}` : '';
 
   if (v.title) document.title = `${v.title} – FreeView`;

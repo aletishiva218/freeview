@@ -14,14 +14,27 @@
     if (!t) t = (document.cookie.match(/(?:^|; )fv_theme=(light|dark)(?:;|$)/) || [])[1];
     if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
   </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"/>
+  <link rel="preconnect" href="https://i.ytimg.com"/>
   <link rel="stylesheet" href="/main.css"/>
 </head>
 <body>
   <header id="topbar">
-    <a href="#home" class="logo" id="logo-btn">&#9654; FreeView</a>
-    <form id="search-form">
-      <input id="search-input" type="search" placeholder="Search YouTube…" autocomplete="off" spellcheck="false"/>
-      <button type="submit" aria-label="Search">&#128269;</button>
+    <a href="#home" class="logo" id="logo-btn" aria-label="FreeView home">
+      <svg class="logo-mark" viewBox="0 0 30 21" aria-hidden="true">
+        <rect width="30" height="21" rx="6" fill="#ff0033"/>
+        <path d="M12 6.2v8.6l7.2-4.3z" fill="#fff"/>
+      </svg>
+      <span class="logo-word">Free<span>View</span></span>
+    </a>
+    <form id="search-form" role="search">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="search-input" type="search" placeholder="Search" aria-label="Search YouTube" autocomplete="off" spellcheck="false" enterkeyhint="search"/>
+      <button type="submit" aria-label="Search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </button>
     </form>
     <div class="theme-picker">
       <button type="button" id="theme-btn" class="theme-btn" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
@@ -34,7 +47,15 @@
     </div>
   </header>
   <main id="app">
-    <div class="spinner" id="initial-spinner"></div>
+    <!-- First-paint skeleton (replaced as soon as the app renders) -->
+    <div class="grid" aria-hidden="true">
+      <div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info"><div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div><div class="sk sk-line sk-line--meta"></div></div></div>
+      <div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info"><div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div><div class="sk sk-line sk-line--meta"></div></div></div>
+      <div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info"><div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div><div class="sk sk-line sk-line--meta"></div></div></div>
+      <div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info"><div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div><div class="sk sk-line sk-line--meta"></div></div></div>
+      <div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info"><div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div><div class="sk sk-line sk-line--meta"></div></div></div>
+      <div class="sk-card"><div class="sk sk-thumb"></div><div class="sk-info"><div class="sk sk-line sk-line--title"></div><div class="sk sk-line sk-line--title2"></div><div class="sk sk-line sk-line--meta"></div></div></div>
+    </div>
   </main>
   <script src="/main.js"></script>
 </body>
