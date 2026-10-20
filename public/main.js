@@ -325,84 +325,160 @@ function pageLoader(shorts = false) {
 }
 
 
-// ─── Views ────────────────────────────────────────────────────────────────────
-async function homeView() {
-  stopObserver();
+// ─── Feed views (home & search) ──────────────────────────────────────────────
+// Each loaded feed (home for a category/refresh/tab, or a search + tab) is kept
+// as a live DOM element. Switching tabs or coming back from a video re-attaches
+// it as-is: no skeleton, no re-render, thumbnails stay loaded (no fade-in
+// blink), and infinite-scroll state and scroll position are preserved.
+const FEED_VIEW_TTL = 10 * 60_000; // rebuild after this, so feeds don't go stale
+const FEED_VIEW_MAX = 8;           // keep at most this many in memory
+const feedViews = new Map();       // key → view (Map order = least recently used first)
+let mountedView = null;
 
+// Remember the scroll position of the feed on screen (restored on Back).
+window.addEventListener('scroll', () => {
+  if (mountedView?.el.isConnected) mountedView.scrollY = window.scrollY;
+}, { passive: true });
+
+// Thumbnails already in the browser cache: show them without the fade-in.
+function showCachedImages(root) {
+  root.querySelectorAll('.card-thumb img:not(.is-loaded)').forEach(img => {
+    if (img.complete && img.naturalWidth) img.classList.add('is-loaded');
+  });
+}
+
+/**
+ * Shows the feed for `opts.key`, re-using the live view when there is one.
+ *   header      HTML above the grid (title, tabs…)
+ *   shorts      portrait grid
+ *   fetchPage   (page) => Promise<{videos, hasMore}>
+ *   initial     optional {videos, hasMore} to render immediately (browser cache)
+ *   revalidate  with `initial`: fetch page 1 in the background and update only
+ *               if the videos actually changed
+ *   onFresh     ({videos, hasMore}) after page 1 was fetched (e.g. to cache it)
+ *   empty       [title, sub] message when page 1 has no videos
+ *   errorTitle  message title when page 1 fails
+ *   restoreScroll  scroll back to where this feed was left (Back navigation)
+ */
+function showFeedView(opts) {
+  stopObserver();
+  let view = feedViews.get(opts.key);
+  if (view && Date.now() - view.created > FEED_VIEW_TTL) {
+    feedViews.delete(opts.key);
+    view = null;
+  }
+  if (view) {
+    feedViews.delete(opts.key); // move to most-recently-used
+  } else {
+    view = createFeedView(opts);
+  }
+  feedViews.set(opts.key, view);
+  while (feedViews.size > FEED_VIEW_MAX) feedViews.delete(feedViews.keys().next().value);
+
+  app.replaceChildren(view.el);
+  mountedView = view;
+  window.scrollTo(0, opts.restoreScroll ? view.scrollY : 0);
+  view.scrollY = window.scrollY;
+  if (view.ready && view.hasMore && !view.loading) onScrollEnd(view.loadNext);
+  return view;
+}
+
+function createFeedView(opts) {
+  const el = document.createElement('div');
+  el.className = 'feed-view';
+  const view = {
+    key: opts.key, el, created: Date.now(), scrollY: 0,
+    page: 1, hasMore: false, loading: false, ready: false,
+  };
+  const isMounted = () => mountedView === view && el.isConnected;
+  const gridEl = () => el.querySelector('#main-grid');
+
+  function renderFirstPage({ videos, hasMore }) {
+    view.page = 2;
+    view.hasMore = hasMore;
+    view.ready = true;
+    if (!videos.length) {
+      el.innerHTML = opts.header + msg(...opts.empty);
+      view.hasMore = false;
+      return;
+    }
+    el.innerHTML = opts.header + videoGrid(videos, opts.shorts);
+    showCachedImages(el);
+  }
+
+  view.loadNext = async function loadNext() {
+    if (view.loading || !view.hasMore) return;
+    view.loading = true;
+    stopObserver();
+    const loader = pageLoader(opts.shorts);
+    el.appendChild(loader);
+    try {
+      const { videos, hasMore } = await opts.fetchPage(view.page);
+      gridEl()?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
+      view.page++;
+      view.hasMore = hasMore;
+    } catch { /* keep what we have; scrolling again retries */ }
+    loader.remove();
+    view.loading = false;
+    if (isMounted() && view.hasMore) onScrollEnd(loadNext);
+  };
+
+  if (opts.initial) {
+    renderFirstPage(opts.initial);
+    if (opts.revalidate) {
+      opts.fetchPage(1).then(fresh => {
+        opts.onFresh?.(fresh);
+        const same = fresh.videos.length === opts.initial.videos.length
+          && fresh.videos.every((v, i) => v.id === opts.initial.videos[i].id);
+        // Only redraw when YouTube actually returned different videos and the
+        // user hasn't started scrolling into page 2.
+        if (same || !fresh.videos.length || view.page !== 2 || view.loading) return;
+        renderFirstPage(fresh);
+        if (isMounted()) {
+          stopObserver();
+          if (view.hasMore) onScrollEnd(view.loadNext);
+        }
+      }).catch(() => { /* keep the cached grid */ });
+    }
+    return view;
+  }
+
+  // Nothing to show yet: skeleton under the header, then page 1.
+  el.innerHTML = opts.header + skeletonGrid(opts.shorts);
+  setRefreshing(true, el);
+  opts.fetchPage(1).then(first => {
+    opts.onFresh?.(first);
+    renderFirstPage(first);
+    if (isMounted() && view.hasMore) onScrollEnd(view.loadNext);
+  }).catch(e => {
+    el.innerHTML = opts.header + msg(opts.errorTitle, e.message, true);
+    feedViews.delete(opts.key); // don't keep a failed feed; next visit retries
+  });
+  return view;
+}
+
+// ─── Views ────────────────────────────────────────────────────────────────────
+// restoreScroll: coming back (e.g. from a video) puts the feed back where it was.
+function homeView({ restoreScroll = false } = {}) {
   const cats = Prefs.getCategories();
   if (cats === null) return categoriesView(true); // first visit: ask once
   const refresh  = FeedRefresh.get();
   const format   = FeedFormat.get();
   const cacheKey = `home:${cats.join(',')}:${refresh}:${format}`;
-  const header   = homeHeader(cats, format);
-  const grid     = videos => videoGrid(videos, format === 'shorts');
+  const cached   = BrowserCache.get(cacheKey);
 
-  // page starts at 2 — page 1 is always the initial/refresh load
-  let page    = 2;
-  let loading = false;
-
-  async function loadNext() {
-    if (loading) return;
-    loading = true;
-    stopObserver();
-
-    const loader = pageLoader(format === 'shorts');
-    app.appendChild(loader);
-
-    try {
-      const { videos, hasMore } = await api.home(page, cats, refresh, format);
-      loader.remove();
-      document.getElementById('main-grid')
-        ?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
-      page++;
-      if (hasMore) onScrollEnd(loadNext);
-    } catch {
-      loader.remove();
-    } finally {
-      loading = false;
-    }
-  }
-
-  const cached = BrowserCache.get(cacheKey);
-
-  if (cached) {
-    // Render cached data instantly — no loading state
-    app.innerHTML = `${header}${grid(cached.data.videos)}`;
-    if (cached.data.hasMore) onScrollEnd(loadNext);
-
-    // Always fetch fresh page 1 in background; update grid only if user hasn't scrolled yet
-    api.home(1, cats, refresh, format).then(({ videos, hasMore }) => {
-      if (!videos.length) return;
-      BrowserCache.set(cacheKey, { videos, hasMore });
-      const stillHome = ['home', ''].includes(parseHash().path) && document.getElementById('main-grid');
-      if (page === 2 && stillHome) {
-        // User hasn't scrolled to load page 2 yet — safe to refresh the grid
-        stopObserver();
-        app.innerHTML = `${header}${grid(videos)}`;
-        if (hasMore) onScrollEnd(loadNext);
-      }
-    }).catch(() => { /* keep cached grid on network error */ });
-
-  } else {
-    // First visit (or a refresh) — skeleton cards under the header, fetch, then cache
-    app.innerHTML = header + skeletonGrid(format === 'shorts');
-    setRefreshing(true);
-    try {
-      const { videos, hasMore } = await api.home(1, cats, refresh, format);
-      if (FeedRefresh.get() !== refresh || FeedFormat.get() !== format
-          || !['home', ''].includes(parseHash().path)) return;
-      if (!videos.length) {
-        app.innerHTML = header + msg('Nothing to show', 'The feed returned no videos.');
-        return;
-      }
-      BrowserCache.set(cacheKey, { videos, hasMore });
-      app.innerHTML = `${header}${grid(videos)}`;
-      if (hasMore) onScrollEnd(loadNext);
-    } catch (e) {
-      app.innerHTML = header + msg('Could not load home feed', e.message, true);
-    }
-    setRefreshing(false);
-  }
+  showFeedView({
+    key: cacheKey,
+    header: homeHeader(cats, format),
+    shorts: format === 'shorts',
+    fetchPage: page => api.home(page, cats, refresh, format),
+    initial: cached?.data?.videos?.length ? cached.data : null,
+    revalidate: true,
+    onFresh: data => { if (data.videos.length) BrowserCache.set(cacheKey, data); },
+    empty: ['Nothing to show', 'The feed returned no videos.'],
+    errorTitle: 'Could not load home feed',
+    restoreScroll,
+  });
 }
 
 // Home header: the chosen categories with an Edit link (or a prompt to pick
@@ -439,8 +515,8 @@ function refreshButton() {
   </button>`;
 }
 
-function setRefreshing(on) {
-  const btn = document.getElementById('feed-refresh');
+function setRefreshing(on, root = document) {
+  const btn = root.querySelector('#feed-refresh');
   if (!btn) return;
   btn.disabled = on;
   btn.classList.toggle('is-loading', on);
@@ -538,56 +614,19 @@ function categoriesView(firstVisit = false) {
 }
 
 // format lives in the URL (#search?q=…&f=shorts) so Back/reload keep it.
-async function searchView(q, format = 'all') {
+function searchView(q, format = 'all', { restoreScroll = false } = {}) {
   if (!FORMATS.some(f => f.id === format)) format = 'all';
-  stopObserver();
   searchInput.value = q;
-  const header = `<h1 class="section-title">Results for <q>${esc(q)}</q></h1>${formatTabs(format)}`;
-  app.innerHTML = header + skeletonGrid(format === 'shorts');
-
-  let page    = 1;
-  let loading = false;
-
-  async function loadNext() {
-    if (loading) return;
-    loading = true;
-    stopObserver();
-
-    const loader = pageLoader(format === 'shorts');
-    if (page > 1) app.appendChild(loader);
-
-    try {
-      const { videos, hasMore } = await api.search(q, page, format);
-      // User switched tab or searched again while this was loading
-      const now = parseHash();
-      if (now.path !== 'search' || now.params.get('q') !== q || (now.params.get('f') || 'all') !== format) return;
-
-      loader.remove();
-
-      if (page === 1) {
-        if (!videos.length) {
-          const what = format === 'shorts' ? 'Shorts' : format === 'videos' ? 'full videos' : 'results';
-          app.innerHTML = header + msg(`No ${what} for "${q}"`, 'Try a different search term or tab.');
-          return;
-        }
-        app.innerHTML = header + videoGrid(videos, format === 'shorts');
-      } else {
-        document.getElementById('main-grid')
-          ?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
-      }
-
-      page++;
-      if (hasMore) onScrollEnd(loadNext);
-
-    } catch (e) {
-      loader.remove();
-      if (page === 1) app.innerHTML = header + msg('Search failed', e.message, true);
-    } finally {
-      loading = false;
-    }
-  }
-
-  loadNext();
+  const what = format === 'shorts' ? 'Shorts' : format === 'videos' ? 'full videos' : 'results';
+  showFeedView({
+    key: `search:${format}:${q}`,
+    header: `<h1 class="section-title">Results for <q>${esc(q)}</q></h1>${formatTabs(format)}`,
+    shorts: format === 'shorts',
+    fetchPage: page => api.search(q, page, format),
+    empty: [`No ${what} for "${q}"`, 'Try a different search term or tab.'],
+    errorTitle: 'Search failed',
+    restoreScroll,
+  });
 }
 
 // isShortHint: the card that linked here was a Short, so start with the 9:16 player.
@@ -1076,9 +1115,11 @@ function route() {
   renderedHash = location.hash;
   document.title = 'FreeView';
 
-  if (path === 'home' || path === '') return homeView();
+  if (path === 'home' || path === '') return homeView({ restoreScroll: true });
   if (path === 'categories') return categoriesView(false);
-  if (path === 'search' && params.get('q')) return searchView(params.get('q'), params.get('f') || 'all');
+  if (path === 'search' && params.get('q')) {
+    return searchView(params.get('q'), params.get('f') || 'all', { restoreScroll: true });
+  }
   if (path === 'watch'  && params.get('v')) return watchView(params.get('v'), params.get('short') === '1');
 
   homeView();
@@ -1103,6 +1144,7 @@ document.getElementById('search-form').addEventListener('submit', e => {
 
 document.getElementById('logo-btn').addEventListener('click', () => {
   searchInput.value = '';
+  feedViews.forEach(v => { if (v.key.startsWith('home:')) v.scrollY = 0; });
   // If already on #home the hashchange event won't fire, so force a fresh render.
   if (!location.hash || location.hash === '#home') {
     homeView();
