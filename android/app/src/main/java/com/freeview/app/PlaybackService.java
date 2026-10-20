@@ -182,6 +182,8 @@ public class PlaybackService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         shutdown();
+        // Write cookies (saved categories/theme) to disk before ending the process.
+        CookieBackup.save(this, MainActivity.HOME_URL);
         android.os.Process.killProcess(android.os.Process.myPid());
     }
 

@@ -50,6 +50,18 @@
     };
     setInterval(reportTitle, 1000);
 
+    // Tell the app when saved preferences (categories / theme cookies) change
+    // so it backs them up immediately.
+    var lastPrefs = null;
+    var reportPrefs = function () {
+      var p = document.cookie.split('; ').filter(function (c) {
+        return /^fv_(cats|theme)=/.test(c);
+      }).sort().join('; ');
+      if (lastPrefs !== null && p !== lastPrefs) send({ type: 'prefs' });
+      lastPrefs = p;
+    };
+    setInterval(reportPrefs, 1000);
+
     // Report the colour behind the status/navigation bars so the app can
     // match them to the page theme (black while the Shorts viewer is open).
     var lastBg = '';

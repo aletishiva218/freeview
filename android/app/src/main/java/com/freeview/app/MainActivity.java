@@ -55,7 +55,7 @@ import java.util.Set;
 @SuppressLint("RequiresFeature") // bridge only exists when WEB_MESSAGE_LISTENER is supported
 public class MainActivity extends Activity implements PlaybackService.Controller {
 
-    private static final String HOME_URL  = "https://freeview.onrender.com/";
+    static final String HOME_URL  = "https://freeview.onrender.com/";
     private static final String SITE_HOST = "freeview.onrender.com";
 
     /** Frames that get the visibility override and the native bridge. */
@@ -114,9 +114,14 @@ public class MainActivity extends Activity implements PlaybackService.Controller
         PlaybackService.controller = this;
         nightMode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
 
-        if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
-            web.loadUrl(HOME_URL);
-        }
+        // Put back saved preference cookies (categories, theme) before the page
+        // reads them, in case WebView lost them when the process was killed.
+        CookieBackup.restore(this, HOME_URL, () -> {
+            if (isDestroyed()) return;
+            if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
+                web.loadUrl(HOME_URL);
+            }
+        });
 
         requestNotificationPermission();
         main.postDelayed(this::maybeShowBackgroundSetup, 1500);
@@ -144,6 +149,8 @@ public class MainActivity extends Activity implements PlaybackService.Controller
         super.onStop();
         inForeground = false;
         backgroundedAt = SystemClock.elapsedRealtime();
+        // Leaving the app (Home, Recents, screen off) precedes any kill.
+        CookieBackup.save(this, HOME_URL);
     }
 
     @Override
@@ -306,6 +313,11 @@ public class MainActivity extends Activity implements PlaybackService.Controller
         if ("title".equals(type) && isMainFrame) {
             title = msg.optString("title");
             if (PlaybackService.running) pushToService();
+            return;
+        }
+        if ("prefs".equals(type) && isMainFrame) {
+            // Categories or theme changed on the page: back them up right away.
+            CookieBackup.save(this, HOME_URL);
             return;
         }
         if ("theme".equals(type) && isMainFrame) {

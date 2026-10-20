@@ -8,10 +8,11 @@
   <meta name="theme-color" content="#1a1a1a"/>
   <script>
     // Apply the saved theme before first paint (no flash of the wrong theme).
-    try {
-      var t = localStorage.getItem('fv:theme');
-      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
+    // localStorage first, then the fv_theme cookie (kept by the Android app).
+    var t = null;
+    try { t = localStorage.getItem('fv:theme'); } catch (e) {}
+    if (!t) t = (document.cookie.match(/(?:^|; )fv_theme=(light|dark)(?:;|$)/) || [])[1];
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
   </script>
   <link rel="stylesheet" href="/main.css"/>
 </head>

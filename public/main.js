@@ -31,19 +31,26 @@ const THEME_ICONS = {
 };
 const THEME_LABELS = { system: 'System (default)', light: 'Light', dark: 'Dark' };
 
+// Saved in localStorage and mirrored to the fv_theme cookie: the Android app
+// backs up cookies natively, so the choice survives the app being killed.
 const Theme = {
   KEY: 'fv:theme',
+  COOKIE: 'fv_theme',
   get() {
-    try {
-      const t = localStorage.getItem(this.KEY);
-      return t === 'light' || t === 'dark' ? t : 'system';
-    } catch { return 'system'; }
+    let t = null;
+    try { t = localStorage.getItem(this.KEY); } catch { /* ignore */ }
+    if (!t) t = (document.cookie.match(/(?:^|; )fv_theme=(light|dark)(?:;|$)/) || [])[1];
+    return t === 'light' || t === 'dark' ? t : 'system';
   },
   set(choice) {
     try {
       if (choice === 'system') localStorage.removeItem(this.KEY);
       else localStorage.setItem(this.KEY, choice);
-    } catch { /* private mode: applies for this page only */ }
+    } catch { /* private mode: the cookie below still keeps it */ }
+    const secure = location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = choice === 'system'
+      ? `${this.COOKIE}=; Max-Age=0; Path=/; SameSite=Lax${secure}`
+      : `${this.COOKIE}=${choice}; Max-Age=${365 * 24 * 3600}; Path=/; SameSite=Lax${secure}`;
     this.apply(choice);
   },
   apply(choice = this.get()) {
