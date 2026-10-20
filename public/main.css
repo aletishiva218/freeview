@@ -50,11 +50,13 @@ body {
 #search-form {
   flex: 1;
   display: flex;
+  min-width: 0;
   max-width: 540px;
 }
 
 #search-input {
   flex: 1;
+  min-width: 0; /* inputs default to ~20ch wide; let it shrink on small phones */
   padding: 9px 16px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -569,4 +571,18 @@ video::-webkit-media-controls-panel { background: #111; }
 @media (max-width: 600px) {
   .format-tab { padding: 7px 12px; font-size: 0.82rem; }
   .grid--shorts { grid-template-columns: 1fr 1fr; gap: 10px; }
+}
+
+/* ── Shorts player sizing ──
+   Must come after the mobile .player-wrap rules: those stretch the 16:9
+   player edge-to-edge with negative margins, which pinned the narrower
+   Shorts player to the left. Here it is centered at every width and sized
+   so the whole 9:16 frame fits on screen below the top bar. */
+.player-wrap.player-wrap--short {
+  width: min(100%, 420px, calc((100vh - 120px) * 9 / 16));
+  width: min(100%, 420px, calc((100svh - 120px) * 9 / 16));
+  max-width: none;
+  margin-left: auto;
+  margin-right: auto;
+  border-radius: var(--radius);
 }
