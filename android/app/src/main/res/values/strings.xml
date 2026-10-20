@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FreeView</string>
+    <string name="channel_name">Playback</string>
+    <string name="channel_desc">Shows what is playing and lets you control it</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="close">Close</string>
+    <string name="now_playing">Playing in background</string>
+    <string name="bg_title">Allow background playback</string>
+    <string name="bg_message">Realme phones stop apps in the background to save battery. To keep videos playing when you go to the home screen or lock your phone:\n\n1. Tap \"Allow\" on the next screen (battery optimisation).\n2. Then in App info → Battery, choose \"Allow background activity\".\n3. Optional: in Recents, lock FreeView (padlock icon).</string>
+    <string name="bg_allow">Continue</string>
+    <string name="bg_later">Later</string>
+    <string name="bg_app_settings">Next: in App info → Battery, allow background activity.</string>
+</resources>
