@@ -8,6 +8,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -82,6 +83,7 @@ public class MainActivity extends Activity implements PlaybackService.Controller
     private boolean inForeground;
     private long backgroundedAt;
     private boolean openAppSettingsOnResume;
+    private int nightMode;
 
     // ─── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -110,6 +112,7 @@ public class MainActivity extends Activity implements PlaybackService.Controller
         setupBackHandling();
 
         PlaybackService.controller = this;
+        nightMode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
 
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
             web.loadUrl(HOME_URL);
@@ -147,6 +150,38 @@ public class MainActivity extends Activity implements PlaybackService.Controller
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         web.saveState(outState);
+    }
+
+    /**
+     * The phone switched between light and dark. WebView only picks up the new
+     * prefers-color-scheme when the activity is recreated, so do that, but
+     * never in the middle of playback (it would stop the video); in that case
+     * the page keeps its current theme until the app is next opened.
+     */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        int mode = newConfig.uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        if (mode != nightMode) {
+            nightMode = mode;
+            if (!playing && customView == null) recreate();
+        }
+    }
+
+    /** Matches the status/navigation bars to the page background ("rgb(r, g, b)"). */
+    private void applyPageColor(String css) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)").matcher(css == null ? "" : css);
+        if (!m.find()) return;
+        int r = Integer.parseInt(m.group(1)), g = Integer.parseInt(m.group(2)), b = Integer.parseInt(m.group(3));
+        root.setBackgroundColor(Color.rgb(r, g, b));
+        boolean light = (0.299 * r + 0.587 * g + 0.114 * b) > 160;
+        WindowInsetsController c = getWindow().getInsetsController();
+        if (c != null) {
+            int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            c.setSystemBarsAppearance(light ? mask : 0, mask);
+        }
     }
 
     @Override
@@ -246,7 +281,9 @@ public class MainActivity extends Activity implements PlaybackService.Controller
                 + "<style>body{background:#0f0f0f;color:#f1f1f1;font-family:sans-serif;display:flex;"
                 + "flex-direction:column;align-items:center;justify-content:center;height:90vh;text-align:center;padding:0 24px}"
                 + "p{color:#aaa}button{margin-top:16px;padding:12px 28px;border:0;border-radius:8px;"
-                + "background:#ff4444;color:#fff;font-size:16px}</style></head><body>"
+                + "background:#ff4444;color:#fff;font-size:16px}"
+                + "@media (prefers-color-scheme: light){body{background:#fff;color:#0f0f0f}p{color:#606060}"
+                + "button{background:#cc1f1f}}</style></head><body>"
                 + "<h2>Can't reach FreeView</h2><p>Check your internet connection and try again.</p>"
                 + "<button onclick=\"location.href='" + HOME_URL + "'\">Retry</button></body></html>";
         view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
@@ -269,6 +306,10 @@ public class MainActivity extends Activity implements PlaybackService.Controller
         if ("title".equals(type) && isMainFrame) {
             title = msg.optString("title");
             if (PlaybackService.running) pushToService();
+            return;
+        }
+        if ("theme".equals(type) && isMainFrame) {
+            applyPageColor(msg.optString("bg"));
             return;
         }
         if (!"state".equals(type)) return;

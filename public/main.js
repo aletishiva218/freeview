@@ -21,6 +21,76 @@ function msg(text, sub = '', isError = false) {
   </div>`;
 }
 
+// ─── Theme (System default / Light / Dark) ────────────────────────────────────
+// Stored per device in localStorage. index.html applies it before first paint;
+// this keeps the button, menu and browser UI colour in sync.
+const THEME_ICONS = {
+  system: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
+  light:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  dark:   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+};
+const THEME_LABELS = { system: 'System (default)', light: 'Light', dark: 'Dark' };
+
+const Theme = {
+  KEY: 'fv:theme',
+  get() {
+    try {
+      const t = localStorage.getItem(this.KEY);
+      return t === 'light' || t === 'dark' ? t : 'system';
+    } catch { return 'system'; }
+  },
+  set(choice) {
+    try {
+      if (choice === 'system') localStorage.removeItem(this.KEY);
+      else localStorage.setItem(this.KEY, choice);
+    } catch { /* private mode: applies for this page only */ }
+    this.apply(choice);
+  },
+  apply(choice = this.get()) {
+    const root = document.documentElement;
+    if (choice === 'system') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', choice);
+    // Browser UI (Android address bar etc.) follows the top bar colour.
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = getComputedStyle(document.getElementById('topbar')).backgroundColor;
+    const btn = document.getElementById('theme-btn');
+    btn.innerHTML = THEME_ICONS[choice];
+    btn.setAttribute('aria-label', `Theme: ${THEME_LABELS[choice]}`);
+    btn.title = `Theme: ${THEME_LABELS[choice]}`;
+    document.querySelectorAll('[data-theme-choice]').forEach(b => {
+      b.setAttribute('aria-checked', String(b.dataset.themeChoice === choice));
+    });
+  },
+};
+
+(function setupThemePicker() {
+  const btn  = document.getElementById('theme-btn');
+  const menu = document.getElementById('theme-menu');
+  menu.querySelectorAll('[data-theme-choice]').forEach(b => {
+    b.insertAdjacentHTML('afterbegin', THEME_ICONS[b.dataset.themeChoice]);
+  });
+
+  const open  = () => { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); menu.querySelector('[aria-checked="true"]')?.focus(); };
+  const close = () => { menu.hidden = true;  btn.setAttribute('aria-expanded', 'false'); };
+
+  btn.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
+  menu.addEventListener('click', e => {
+    const item = e.target.closest('[data-theme-choice]');
+    if (!item) return;
+    Theme.set(item.dataset.themeChoice);
+    close();
+    btn.focus();
+  });
+  document.addEventListener('click', e => { if (!menu.hidden && !e.target.closest('.theme-picker')) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { close(); btn.focus(); } });
+
+  // System mode: follow the device switching between light and dark live.
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    if (Theme.get() === 'system') Theme.apply('system');
+  });
+  Theme.apply();
+})();
+
 // ─── API ──────────────────────────────────────────────────────────────────────
 // timeoutMs guards against a request that never resolves (e.g. a stalled
 // connection while Render wakes the server) leaving a spinner up forever.

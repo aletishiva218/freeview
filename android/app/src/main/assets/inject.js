@@ -49,6 +49,22 @@
       if (t && t !== lastTitle) { lastTitle = t; send({ type: 'title', title: t }); }
     };
     setInterval(reportTitle, 1000);
+
+    // Report the colour behind the status/navigation bars so the app can
+    // match them to the page theme (black while the Shorts viewer is open).
+    var lastBg = '';
+    var reportTheme = function () {
+      if (!document.body) return;
+      var bg = document.documentElement.classList.contains('shorts-open')
+        ? 'rgb(0, 0, 0)'
+        : getComputedStyle(document.body).backgroundColor;
+      if (bg && bg !== lastBg) { lastBg = bg; send({ type: 'theme', bg: bg }); }
+    };
+    new MutationObserver(reportTheme).observe(document.documentElement,
+      { attributes: true, attributeFilter: ['class', 'data-theme'] });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', reportTheme);
+    document.addEventListener('DOMContentLoaded', reportTheme);
+    setInterval(reportTheme, 2000);
     // Leaving the watch page / Shorts viewer stops the player.
     window.addEventListener('hashchange', function () {
       if (!/^#(watch|shorts)\?/.test(location.hash)) send({ type: 'state', state: 'stopped' });

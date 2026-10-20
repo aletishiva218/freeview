@@ -4,6 +4,15 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>FreeView</title>
+  <meta name="color-scheme" content="dark light"/>
+  <meta name="theme-color" content="#1a1a1a"/>
+  <script>
+    // Apply the saved theme before first paint (no flash of the wrong theme).
+    try {
+      var t = localStorage.getItem('fv:theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="/main.css"/>
 </head>
 <body>
@@ -13,6 +22,15 @@
       <input id="search-input" type="search" placeholder="Search YouTube…" autocomplete="off" spellcheck="false"/>
       <button type="submit" aria-label="Search">&#128269;</button>
     </form>
+    <div class="theme-picker">
+      <button type="button" id="theme-btn" class="theme-btn" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
+      <div class="theme-menu" id="theme-menu" role="menu" hidden>
+        <p class="theme-menu-title">Appearance</p>
+        <button type="button" role="menuitemradio" data-theme-choice="system">System (default)</button>
+        <button type="button" role="menuitemradio" data-theme-choice="light">Light</button>
+        <button type="button" role="menuitemradio" data-theme-choice="dark">Dark</button>
+      </div>
+    </div>
   </header>
   <main id="app">
     <div class="spinner" id="initial-spinner"></div>

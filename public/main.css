@@ -2,14 +2,51 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  /* Dark theme (default palette) */
   --bg:      #0f0f0f;
   --bg2:     #1a1a1a;
   --bg3:     #272727;
   --border:  #383838;
+  --border2: #666666;   /* hover / focus borders */
+  --hover:   #333333;   /* hover fill on bg3 controls */
   --text:    #f1f1f1;
   --text2:   #aaaaaa;
   --red:     #ff4444;
+  --error:   #ff7777;
   --radius:  8px;
+  color-scheme: dark;
+}
+
+/* Light theme: chosen explicitly, or System when the device is in light mode.
+   The data-theme attribute is set before first paint by the inline script in
+   index.html, so there is no flash of the wrong theme. */
+:root[data-theme="light"] {
+  --bg:      #ffffff;
+  --bg2:     #ffffff;
+  --bg3:     #f2f2f2;
+  --border:  #e0e0e0;
+  --border2: #b0b0b0;
+  --hover:   #e5e5e5;
+  --text:    #0f0f0f;
+  --text2:   #606060;
+  --red:     #cc1f1f;   /* darker red keeps text links readable on white */
+  --error:   #c5221f;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:      #ffffff;
+    --bg2:     #ffffff;
+    --bg3:     #f2f2f2;
+    --border:  #e0e0e0;
+    --border2: #b0b0b0;
+    --hover:   #e5e5e5;
+    --text:    #0f0f0f;
+    --text2:   #606060;
+    --red:     #cc1f1f;
+    --error:   #c5221f;
+    color-scheme: light;
+  }
 }
 
 html { scroll-behavior: smooth; }
@@ -67,7 +104,7 @@ body {
   outline: none;
   transition: border-color 0.15s;
 }
-#search-input:focus { border-color: #888; }
+#search-input:focus { border-color: var(--border2); }
 #search-input::placeholder { color: var(--text2); }
 
 #search-form button {
@@ -81,7 +118,7 @@ body {
   font-size: 1rem;
   transition: background 0.15s;
 }
-#search-form button:hover { background: #333; }
+#search-form button:hover { background: var(--hover); }
 
 /* ── App container ── */
 #app { padding: 20px; max-width: 1400px; margin: 0 auto; }
@@ -106,7 +143,7 @@ body {
   font-size: 0.95rem;
   line-height: 1.6;
 }
-.msg.error { color: #f77; }
+.msg.error { color: var(--error); }
 .msg strong { color: var(--text); display: block; font-size: 1.05rem; margin-bottom: 8px; }
 
 /* ── Section heading ── */
@@ -213,7 +250,7 @@ body {
   font-size: 0.82rem;
   -webkit-line-clamp: 2;
 }
-.card--compact:hover { transform: none; background: var(--bg2); border-radius: 6px; }
+.card--compact:hover { transform: none; background: var(--bg3); border-radius: 6px; }
 
 /* ── Watch layout ── */
 .watch-layout {
@@ -503,7 +540,7 @@ video::-webkit-media-controls-panel { background: #111; }
   transition: background 0.15s, border-color 0.15s;
   -webkit-tap-highlight-color: transparent;
 }
-.cat-chip:hover { border-color: #666; }
+.cat-chip:hover { border-color: var(--border2); }
 .cat-chip[aria-pressed="true"] {
   background: var(--red);
   border-color: var(--red);
@@ -737,4 +774,80 @@ html.shorts-open, html.shorts-open body { overflow: hidden; }
 }
 @media (max-width: 700px) {
   .shorts-nav { display: none; } /* swipe instead */
+}
+
+/* ── Theme picker (top bar) ── */
+.theme-picker { position: relative; flex-shrink: 0; margin-left: auto; }
+.theme-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme-btn:hover { background: var(--hover); }
+.theme-picker svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+.theme-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 300;
+  min-width: 210px;
+  padding: 6px 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+.theme-menu[hidden] { display: none; }
+.theme-menu-title {
+  padding: 8px 16px 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.theme-menu [data-theme-choice] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+  text-align: left;
+  cursor: pointer;
+}
+.theme-menu [data-theme-choice]:hover,
+.theme-menu [data-theme-choice]:focus-visible { background: var(--bg3); outline: none; }
+.theme-menu [aria-checked="true"]::after {
+  content: '✓';
+  margin-left: auto;
+  color: var(--red);
+  font-weight: 700;
+}
+
+@media (max-width: 600px) {
+  .theme-btn { width: 34px; height: 34px; }
+  .theme-picker svg { width: 18px; height: 18px; }
 }

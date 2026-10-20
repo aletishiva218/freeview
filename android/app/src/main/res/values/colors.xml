@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#0F0F0F</color>
-    <color name="red">#FF4444</color>
+    <!-- Light theme (values-night/colors.xml has the dark ones). Matches the
+         website's palette so there is no flash before the page loads. -->
+    <color name="bg">#FFFFFF</color>
+    <color name="red">#CC1F1F</color>
     <color name="icon_bg">#141414</color>
 </resources>
