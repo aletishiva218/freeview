@@ -396,6 +396,67 @@ async function workerMain() {
   const BLOCK_MS = 30 * 60_000;
   let infoBlockedUntil = 0;
 
+  // ─── Category feeds ───────────────────────────────────────────────────────
+  // YouTube has no keyless "videos in category X" feed that works from Render,
+  // so each category maps to a search query (search is not IP-blocked).
+  // Results are cached per category+page and shared by every user, so the
+  // YouTube load is independent of how many users pick which categories.
+  const CATEGORY_QUERIES = {
+    film:          'official movie trailer',
+    autos:         'car review',
+    music:         'new music video',
+    pets:          'funny pets animals',
+    sports:        'sports highlights',
+    travel:        'travel vlog',
+    gaming:        'gaming',
+    people:        'daily vlog',
+    comedy:        'comedy sketch',
+    entertainment: 'entertainment show',
+    news:          'news today',
+    howto:         'how to diy tutorial',
+    education:     'educational explained',
+    science:       'science technology',
+    nonprofits:    'nonprofit charity activism',
+  };
+
+  function parseCategories(raw) {
+    const ids = String(raw || '').split(',').map(c => c.trim()).filter(c => CATEGORY_QUERIES[c]);
+    return [...new Set(ids)].sort();
+  }
+
+  function getCategoryPage(id, page) {
+    return withCache(`cat:${id}:${page}`, 10 * 60_000, async () => {
+      const yt = await getYT();
+      const sr = await getSearchPage(yt, CATEGORY_QUERIES[id], page, `cont:cat:${id}`, { type: 'video' });
+      if (!sr) return { videos: [], hasMore: false };
+      return {
+        videos: (sr.videos || []).map(fmtVideo).filter(Boolean),
+        hasMore: sr.has_continuation || false,
+      };
+    });
+  }
+
+  // Mixes one page from each selected category round-robin, so every
+  // category is represented near the top. A failing category is skipped
+  // rather than failing the whole feed.
+  async function getCategoryFeed(cats, page) {
+    const results = await Promise.allSettled(cats.map(c => getCategoryPage(c, page)));
+    const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+    if (!ok.length) throw results.find(r => r.status === 'rejected').reason;
+
+    const perCat = Math.max(8, Math.ceil(48 / cats.length));
+    const lists  = ok.map(r => r.videos.slice(0, perCat));
+    const seen   = new Set();
+    const videos = [];
+    for (let i = 0; lists.some(l => i < l.length); i++) {
+      for (const l of lists) {
+        const v = l[i];
+        if (v && !seen.has(v.id)) { seen.add(v.id); videos.push(v); }
+      }
+    }
+    return { videos, hasMore: ok.some(r => r.hasMore) };
+  }
+
   // ─── Express ──────────────────────────────────────────────────────────────
   const app = express();
 
@@ -433,6 +494,15 @@ async function workerMain() {
   // Home feed (10-min cache per page, single-flight)
   app.get('/api/home', async (req, res) => {
     const page = Math.max(1, Math.min(10, parseInt(req.query.page) || 1));
+    const cats = parseCategories(req.query.cats);
+    if (cats.length) {
+      try {
+        return res.json(await getCategoryFeed(cats, page));
+      } catch (e) {
+        console.error(wid, '[/api/home cats]', e.message);
+        // Fall through to the general trending feed below.
+      }
+    }
     try {
       // Page 1: short TTL so home always shows fresh videos on revisit.
       // Pages 2+: longer TTL so the continuation chain stays valid.

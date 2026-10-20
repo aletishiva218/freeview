@@ -41,7 +41,13 @@ async function apiFetch(url, timeoutMs = 60_000) {
 }
 
 const api = {
-  home:   (page = 1) => apiFetch(`/api/home${page > 1 ? `?page=${page}` : ''}`),
+  home:   (page = 1, cats = []) => {
+    const qs = new URLSearchParams();
+    if (page > 1) qs.set('page', page);
+    if (cats.length) qs.set('cats', cats.join(','));
+    const q = qs.toString();
+    return apiFetch(`/api/home${q ? `?${q}` : ''}`);
+  },
   search: (q, page = 1) => apiFetch(`/api/search?q=${encodeURIComponent(q)}${page > 1 ? `&page=${page}` : ''}`),
   video:  (id) => apiFetch(`/api/video/${encodeURIComponent(id)}`, 45_000),
 };
@@ -65,6 +71,48 @@ const BrowserCache = {
     } catch { return null; }
   },
 };
+
+// ─── Category preferences (stored in a cookie on this device) ────────────────
+const CATEGORIES = [
+  { id: 'film',          label: 'Film & Animation' },
+  { id: 'autos',         label: 'Autos & Vehicles' },
+  { id: 'music',         label: 'Music' },
+  { id: 'pets',          label: 'Pets & Animals' },
+  { id: 'sports',        label: 'Sports' },
+  { id: 'travel',        label: 'Travel & Events' },
+  { id: 'gaming',        label: 'Gaming' },
+  { id: 'people',        label: 'People & Blogs' },
+  { id: 'comedy',        label: 'Comedy' },
+  { id: 'entertainment', label: 'Entertainment' },
+  { id: 'news',          label: 'News & Politics' },
+  { id: 'howto',         label: 'Howto & Style' },
+  { id: 'education',     label: 'Education' },
+  { id: 'science',       label: 'Science & Technology' },
+  { id: 'nonprofits',    label: 'Nonprofits & Activism' },
+];
+const CATEGORY_IDS = new Set(CATEGORIES.map(c => c.id));
+const CATS_COOKIE  = 'fv_cats';
+
+const Prefs = {
+  // null = never asked, [] = skipped, [...ids] = chosen categories
+  getCategories() {
+    const m = document.cookie.match(new RegExp(`(?:^|; )${CATS_COOKIE}=([^;]*)`));
+    if (!m) return null;
+    const val = decodeURIComponent(m[1]);
+    if (val === 'none') return [];
+    return val.split(',').filter(id => CATEGORY_IDS.has(id));
+  },
+
+  setCategories(ids) {
+    const val = ids.length ? ids.join(',') : 'none';
+    const secure = location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${CATS_COOKIE}=${encodeURIComponent(val)}; Max-Age=${365 * 24 * 3600}; Path=/; SameSite=Lax${secure}`;
+  },
+};
+
+function categoryLabel(id) {
+  return CATEGORIES.find(c => c.id === id)?.label || id;
+}
 
 // ─── Infinite scroll ──────────────────────────────────────────────────────────
 let _observer = null;
@@ -126,6 +174,11 @@ function pageLoader() {
 async function homeView() {
   stopObserver();
 
+  const cats = Prefs.getCategories();
+  if (cats === null) return categoriesView(true); // first visit: ask once
+  const cacheKey = `home:${cats.join(',')}`;
+  const header   = homeHeader(cats);
+
   // page starts at 2 — page 1 is always the initial/refresh load
   let page    = 2;
   let loading = false;
@@ -139,7 +192,7 @@ async function homeView() {
     app.appendChild(loader);
 
     try {
-      const { videos, hasMore } = await api.home(page);
+      const { videos, hasMore } = await api.home(page, cats);
       loader.remove();
       document.getElementById('main-grid')
         ?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
@@ -152,21 +205,22 @@ async function homeView() {
     }
   }
 
-  const cached = BrowserCache.get('home');
+  const cached = BrowserCache.get(cacheKey);
 
   if (cached) {
     // Render cached data instantly — no spinner wait
-    app.innerHTML = `<p class="section-title">Trending</p>${videoGrid(cached.data.videos)}`;
+    app.innerHTML = `${header}${videoGrid(cached.data.videos)}`;
     if (cached.data.hasMore) onScrollEnd(loadNext);
 
     // Always fetch fresh page 1 in background; update grid only if user hasn't scrolled yet
-    api.home(1).then(({ videos, hasMore }) => {
+    api.home(1, cats).then(({ videos, hasMore }) => {
       if (!videos.length) return;
-      BrowserCache.set('home', { videos, hasMore });
-      if (page === 2) {
+      BrowserCache.set(cacheKey, { videos, hasMore });
+      const stillHome = ['home', ''].includes(parseHash().path) && document.getElementById('main-grid');
+      if (page === 2 && stillHome) {
         // User hasn't scrolled to load page 2 yet — safe to refresh the grid
         stopObserver();
-        app.innerHTML = `<p class="section-title">Trending</p>${videoGrid(videos)}`;
+        app.innerHTML = `${header}${videoGrid(videos)}`;
         if (hasMore) onScrollEnd(loadNext);
       }
     }).catch(() => { /* keep cached grid on network error */ });
@@ -175,18 +229,94 @@ async function homeView() {
     // First visit — show spinner, fetch, then cache
     app.innerHTML = spinner();
     try {
-      const { videos, hasMore } = await api.home(1);
+      const { videos, hasMore } = await api.home(1, cats);
       if (!videos.length) {
-        app.innerHTML = msg('Nothing to show', 'Trending feed returned empty.');
+        app.innerHTML = header + msg('Nothing to show', 'The feed returned no videos.');
         return;
       }
-      BrowserCache.set('home', { videos, hasMore });
-      app.innerHTML = `<p class="section-title">Trending</p>${videoGrid(videos)}`;
+      BrowserCache.set(cacheKey, { videos, hasMore });
+      app.innerHTML = `${header}${videoGrid(videos)}`;
       if (hasMore) onScrollEnd(loadNext);
     } catch (e) {
-      app.innerHTML = msg('Could not load home feed', e.message, true);
+      app.innerHTML = header + msg('Could not load home feed', e.message, true);
     }
   }
+}
+
+// Home header: the chosen categories with an Edit link, or a prompt to pick some.
+function homeHeader(cats) {
+  if (!cats.length) {
+    return `<div class="feed-head">
+      <p class="section-title">Trending</p>
+      <a class="feed-edit" href="#categories">Choose categories</a>
+    </div>`;
+  }
+  return `<div class="feed-head">
+    <p class="section-title">For you</p>
+    <div class="feed-cats">${cats.map(c => `<span class="feed-cat">${esc(categoryLabel(c))}</span>`).join('')}</div>
+    <a class="feed-edit" href="#categories">Edit</a>
+  </div>`;
+}
+
+// Category picker. `firstVisit` shows Skip/Continue; otherwise Cancel/Save.
+function categoriesView(firstVisit = false) {
+  stopObserver();
+  document.title = 'Choose categories – FreeView';
+  const selected = new Set(Prefs.getCategories() || []);
+
+  app.innerHTML = `
+    <div class="cat-picker">
+      <h1 class="cat-title">${firstVisit ? 'What do you like to watch?' : 'Your categories'}</h1>
+      <p class="cat-sub">Pick as many as you like. Your home feed will show these.
+        ${firstVisit ? 'You can change them anytime.' : 'Choose none to see trending videos.'}</p>
+      <div class="cat-grid">
+        ${CATEGORIES.map(c => `
+          <button type="button" class="cat-chip" data-id="${c.id}" aria-pressed="${selected.has(c.id)}">
+            ${esc(c.label)}
+          </button>`).join('')}
+      </div>
+      <div class="cat-actions">
+        <button type="button" class="btn btn--ghost" id="cat-secondary">${firstVisit ? 'Skip' : 'Cancel'}</button>
+        <button type="button" class="btn btn--primary" id="cat-primary"></button>
+      </div>
+    </div>`;
+
+  const primary = document.getElementById('cat-primary');
+  const refresh = () => {
+    const n = selected.size;
+    if (firstVisit) {
+      primary.textContent = n ? `Continue (${n})` : 'Continue';
+      primary.disabled = n === 0;
+    } else {
+      primary.textContent = n ? `Save (${n})` : 'Save';
+    }
+  };
+  refresh();
+
+  app.querySelector('.cat-grid').addEventListener('click', e => {
+    const chip = e.target.closest('.cat-chip');
+    if (!chip) return;
+    const id = chip.dataset.id;
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    chip.setAttribute('aria-pressed', selected.has(id));
+    refresh();
+  });
+
+  const goHome = () => {
+    if (!location.hash || location.hash === '#home') homeView();
+    else location.hash = 'home';
+  };
+
+  primary.addEventListener('click', () => {
+    // Keep the canonical order so the same choice always maps to the same feed/cache.
+    Prefs.setCategories(CATEGORIES.map(c => c.id).filter(id => selected.has(id)));
+    goHome();
+  });
+
+  document.getElementById('cat-secondary').addEventListener('click', () => {
+    if (firstVisit) Prefs.setCategories([]);
+    goHome();
+  });
 }
 
 async function searchView(q) {
@@ -324,6 +454,7 @@ function route() {
   const { path, params } = parseHash();
 
   if (path === 'home' || path === '') return homeView();
+  if (path === 'categories') return categoriesView(false);
   if (path === 'search' && params.get('q')) return searchView(params.get('q'));
   if (path === 'watch'  && params.get('v')) return watchView(params.get('v'));
 
