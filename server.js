@@ -439,15 +439,18 @@ async function workerMain() {
     return [...new Set(ids)].sort();
   }
 
-  function getQueryPage(query, page) {
-    return withCache(`q:${query}:${page}`, 10 * 60_000, async () => {
+  // kind: 'video' (regular landscape videos) or 'shorts' (YouTube Shorts).
+  function getQueryPage(query, page, kind = 'video') {
+    return withCache(`q:${kind}:${query}:${page}`, 10 * 60_000, async () => {
       const yt = await getYT();
-      const sr = await getSearchPage(yt, query, page, `cont:q:${query}`, { type: 'video' });
+      const sr = await getSearchPage(yt, query, page, `cont:q:${kind}:${query}`, { type: kind });
       if (!sr) return { videos: [], hasMore: false };
-      return {
-        videos: (sr.videos || []).map(fmtVideo).filter(Boolean),
-        hasMore: sr.has_continuation || false,
-      };
+      // Video search returns Video nodes (no Shorts); Shorts search returns
+      // GridShelfView shelves of ShortsLockupView items.
+      const videos = kind === 'shorts'
+        ? (sr.results || []).flatMap(extractVideos).filter(v => v.isShort)
+        : (sr.videos || []).map(fmtVideo).filter(v => v && !v.isShort);
+      return { videos, hasMore: sr.has_continuation || false };
     });
   }
 
@@ -463,34 +466,60 @@ async function workerMain() {
     return arr;
   }
 
-  // Mixes one page from each selected category round-robin, so every
-  // category is represented near the top. A failing category is skipped
-  // rather than failing the whole feed.
-  async function getCategoryFeed(cats, page, refresh) {
-    const plan = feedPlan(page, refresh);
-    const results = await Promise.allSettled(
-      cats.map(c => getQueryPage(CATEGORY_QUERIES[c][plan.variant], plan.page)));
-    const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value);
-    if (!ok.length) throw results.find(r => r.status === 'rejected').reason;
+  const FEED_FORMATS = new Set(['all', 'videos', 'shorts']);
+  // How many items of each kind one feed page aims for, per format.
+  const FEED_SIZES = {
+    all:    { video: 36, shorts: 12 },
+    videos: { video: 48, shorts: 0 },
+    shorts: { video: 0,  shorts: 40 },
+  };
 
-    const perCat = Math.max(8, Math.ceil(48 / cats.length));
-    const lists  = ok.map(r => r.videos.slice(0, perCat));
-    if (refresh > 0) lists.forEach((l, i) => seededShuffle(l, refresh * 31 + page * 7 + i));
-    const seen   = new Set();
+  // Mixes one page from each query round-robin, so every category is
+  // represented near the top. A failing query is skipped; returns null only
+  // when every query failed.
+  async function mixQueries(queries, page, kind, total, seed) {
+    const results = await Promise.allSettled(queries.map(q => getQueryPage(q, page, kind)));
+    const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+    if (!ok.length) return { error: results.find(r => r.status === 'rejected').reason };
+
+    const perQuery = Math.max(kind === 'shorts' ? 4 : 8, Math.ceil(total / queries.length));
+    const lists = ok.map(r => r.videos.slice(0, perQuery));
+    if (seed) lists.forEach((l, i) => seededShuffle(l, seed + i));
     const videos = [];
     for (let i = 0; lists.some(l => i < l.length); i++) {
-      for (const l of lists) {
-        const v = l[i];
-        if (v && !seen.has(v.id)) { seen.add(v.id); videos.push(v); }
-      }
+      for (const l of lists) if (l[i]) videos.push(l[i]);
     }
     return { videos, hasMore: ok.some(r => r.hasMore) };
   }
 
-  async function getTrendingRefreshFeed(page, refresh) {
-    const plan = feedPlan(page, refresh);
-    const r = await getQueryPage(TRENDING_QUERIES[plan.variant], plan.page);
-    return { videos: seededShuffle(r.videos.slice(0, 40), refresh * 31 + page * 7), hasMore: r.hasMore };
+  // Home feed for the chosen categories (or general trending when none),
+  // format ('all' | 'videos' | 'shorts') and refresh position.
+  async function buildFeed(cats, page, refresh, format) {
+    const plan    = feedPlan(page, refresh);
+    const queries = cats.length
+      ? cats.map(c => CATEGORY_QUERIES[c][plan.variant])
+      : [TRENDING_QUERIES[plan.variant]];
+    const sizes = FEED_SIZES[format];
+    const seed  = refresh > 0 ? refresh * 31 + page * 7 : 0;
+
+    const [vid, sh] = await Promise.all([
+      sizes.video  ? mixQueries(queries, plan.page, 'video',  sizes.video,  seed)     : null,
+      sizes.shorts ? mixQueries(queries, plan.page, 'shorts', sizes.shorts, seed + 1) : null,
+    ]);
+    const parts = [vid, sh].filter(Boolean);
+    if (parts.every(p => p.error)) throw parts[0].error;
+
+    // 'all': one Short after every 3 videos, then whatever is left over.
+    const v = vid?.videos || [], s = sh?.videos || [];
+    const mixed = [];
+    for (let i = 0, j = 0; i < v.length || j < s.length;) {
+      for (let k = 0; k < 3 && i < v.length; k++) mixed.push(v[i++]);
+      if (j < s.length) mixed.push(s[j++]);
+    }
+
+    const seen = new Set();
+    const videos = mixed.filter(x => !seen.has(x.id) && seen.add(x.id));
+    return { videos, hasMore: parts.some(p => p.hasMore) };
   }
 
   // ─── Express ──────────────────────────────────────────────────────────────
@@ -532,19 +561,13 @@ async function workerMain() {
     const page = Math.max(1, Math.min(10, parseInt(req.query.page) || 1));
     const cats    = parseCategories(req.query.cats);
     const refresh = Math.max(0, Math.min(1000, parseInt(req.query.r) || 0));
-    if (cats.length) {
-      try {
-        return res.json(await getCategoryFeed(cats, page, refresh));
-      } catch (e) {
-        console.error(wid, '[/api/home cats]', e.message);
-        // Fall through to the general trending feed below.
-      }
-    } else if (refresh > 0) {
-      try {
-        return res.json(await getTrendingRefreshFeed(page, refresh));
-      } catch (e) {
-        console.error(wid, '[/api/home refresh]', e.message);
-      }
+    const format  = FEED_FORMATS.has(req.query.format) ? req.query.format : 'all';
+    try {
+      return res.json(await buildFeed(cats, page, refresh, format));
+    } catch (e) {
+      console.error(wid, '[/api/home feed]', e.message);
+      if (format === 'shorts') return res.status(500).json({ error: e.message });
+      // Fall back to the original trending feed (regular videos) below.
     }
     try {
       // Page 1: short TTL so home always shows fresh videos on revisit.

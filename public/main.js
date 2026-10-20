@@ -41,11 +41,12 @@ async function apiFetch(url, timeoutMs = 60_000) {
 }
 
 const api = {
-  home:   (page = 1, cats = [], refresh = 0) => {
+  home:   (page = 1, cats = [], refresh = 0, format = 'all') => {
     const qs = new URLSearchParams();
     if (page > 1) qs.set('page', page);
     if (cats.length) qs.set('cats', cats.join(','));
     if (refresh > 0) qs.set('r', refresh);
+    if (format !== 'all') qs.set('format', format);
     const q = qs.toString();
     return apiFetch(`/api/home${q ? `?${q}` : ''}`);
   },
@@ -115,6 +116,26 @@ function categoryLabel(id) {
   return CATEGORIES.find(c => c.id === id)?.label || id;
 }
 
+// Home feed format. "All" is the default for every new visit; the choice is
+// kept per tab so coming back from a video keeps the same filter.
+const FORMATS = [
+  { id: 'all',    label: 'All' },
+  { id: 'videos', label: 'Full videos (16:9)' },
+  { id: 'shorts', label: 'YouTube Shorts (9:16)' },
+];
+const FeedFormat = {
+  KEY: 'fv:format',
+  get() {
+    try {
+      const f = sessionStorage.getItem(this.KEY);
+      return FORMATS.some(x => x.id === f) ? f : 'all';
+    } catch { return 'all'; }
+  },
+  set(f) {
+    try { sessionStorage.setItem(this.KEY, f); } catch { /* private mode */ }
+  },
+};
+
 // How many times the home feed was refreshed in this tab. Each value maps to a
 // different set of videos from the same categories (see feedPlan on the server).
 // Per-tab so coming back from a video shows the same feed you left.
@@ -156,7 +177,7 @@ function videoCard(v, compact = false) {
     ? `<span class="card-dur">${esc(v.duration)}</span>` : '';
   return `
     <a class="card${compact ? ' card--compact' : ''}${v.isShort ? ' card--short' : ''}"
-       href="#watch?v=${esc(v.id)}" title="${esc(v.title)}">
+       href="#watch?v=${esc(v.id)}${v.isShort ? '&short=1' : ''}" title="${esc(v.title)}">
       <div class="card-thumb">
         <img src="${esc(v.thumbnail)}" alt="" loading="lazy" decoding="async"
              onerror="this.style.opacity='0'"/>
@@ -170,8 +191,9 @@ function videoCard(v, compact = false) {
     </a>`;
 }
 
-function videoGrid(videos) {
-  return `<div class="grid" id="main-grid">${videos.map(v => videoCard(v)).join('')}</div>`;
+// shortsOnly: 9:16 portrait thumbnails in a denser grid, like YouTube's Shorts tab.
+function videoGrid(videos, shortsOnly = false) {
+  return `<div class="grid${shortsOnly ? ' grid--shorts' : ''}" id="main-grid">${videos.map(v => videoCard(v)).join('')}</div>`;
 }
 
 // Small spinner shown at the bottom while fetching the next page
@@ -191,8 +213,10 @@ async function homeView() {
   const cats = Prefs.getCategories();
   if (cats === null) return categoriesView(true); // first visit: ask once
   const refresh  = FeedRefresh.get();
-  const cacheKey = `home:${cats.join(',')}:${refresh}`;
-  const header   = homeHeader(cats);
+  const format   = FeedFormat.get();
+  const cacheKey = `home:${cats.join(',')}:${refresh}:${format}`;
+  const header   = homeHeader(cats, format);
+  const grid     = videos => videoGrid(videos, format === 'shorts');
 
   // page starts at 2 — page 1 is always the initial/refresh load
   let page    = 2;
@@ -207,7 +231,7 @@ async function homeView() {
     app.appendChild(loader);
 
     try {
-      const { videos, hasMore } = await api.home(page, cats, refresh);
+      const { videos, hasMore } = await api.home(page, cats, refresh, format);
       loader.remove();
       document.getElementById('main-grid')
         ?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
@@ -224,18 +248,18 @@ async function homeView() {
 
   if (cached) {
     // Render cached data instantly — no spinner wait
-    app.innerHTML = `${header}${videoGrid(cached.data.videos)}`;
+    app.innerHTML = `${header}${grid(cached.data.videos)}`;
     if (cached.data.hasMore) onScrollEnd(loadNext);
 
     // Always fetch fresh page 1 in background; update grid only if user hasn't scrolled yet
-    api.home(1, cats, refresh).then(({ videos, hasMore }) => {
+    api.home(1, cats, refresh, format).then(({ videos, hasMore }) => {
       if (!videos.length) return;
       BrowserCache.set(cacheKey, { videos, hasMore });
       const stillHome = ['home', ''].includes(parseHash().path) && document.getElementById('main-grid');
       if (page === 2 && stillHome) {
         // User hasn't scrolled to load page 2 yet — safe to refresh the grid
         stopObserver();
-        app.innerHTML = `${header}${videoGrid(videos)}`;
+        app.innerHTML = `${header}${grid(videos)}`;
         if (hasMore) onScrollEnd(loadNext);
       }
     }).catch(() => { /* keep cached grid on network error */ });
@@ -245,14 +269,15 @@ async function homeView() {
     app.innerHTML = header + spinner();
     setRefreshing(true);
     try {
-      const { videos, hasMore } = await api.home(1, cats, refresh);
-      if (FeedRefresh.get() !== refresh || !['home', ''].includes(parseHash().path)) return;
+      const { videos, hasMore } = await api.home(1, cats, refresh, format);
+      if (FeedRefresh.get() !== refresh || FeedFormat.get() !== format
+          || !['home', ''].includes(parseHash().path)) return;
       if (!videos.length) {
         app.innerHTML = header + msg('Nothing to show', 'The feed returned no videos.');
         return;
       }
       BrowserCache.set(cacheKey, { videos, hasMore });
-      app.innerHTML = `${header}${videoGrid(videos)}`;
+      app.innerHTML = `${header}${grid(videos)}`;
       if (hasMore) onScrollEnd(loadNext);
     } catch (e) {
       app.innerHTML = header + msg('Could not load home feed', e.message, true);
@@ -261,8 +286,21 @@ async function homeView() {
   }
 }
 
-// Home header: the chosen categories with an Edit link, or a prompt to pick some.
-function homeHeader(cats) {
+// Home header: the chosen categories with an Edit link (or a prompt to pick
+// some), then the All / Full videos / Shorts tabs.
+function homeHeader(cats, format) {
+  return categoryHeader(cats) + formatTabs(format);
+}
+
+function formatTabs(format) {
+  return `<div class="format-tabs" role="tablist" aria-label="Video format">
+    ${FORMATS.map(f => `
+      <button type="button" class="format-tab" role="tab" data-format="${f.id}"
+              aria-selected="${f.id === format}">${esc(f.label)}</button>`).join('')}
+  </div>`;
+}
+
+function categoryHeader(cats) {
   if (!cats.length) {
     return `<div class="feed-head">
       <p class="section-title">Trending</p>
@@ -288,6 +326,15 @@ function setRefreshing(on) {
   btn.disabled = on;
   btn.classList.toggle('is-loading', on);
 }
+
+// Format tabs: switch between All / Full videos / Shorts.
+app.addEventListener('click', e => {
+  const tab = e.target.closest('.format-tab');
+  if (!tab || tab.getAttribute('aria-selected') === 'true') return;
+  FeedFormat.set(tab.dataset.format);
+  window.scrollTo(0, 0);
+  homeView();
+});
 
 // Refresh: move to the next set of videos for the same categories.
 app.addEventListener('click', e => {
@@ -408,7 +455,8 @@ async function searchView(q) {
   loadNext();
 }
 
-async function watchView(videoId) {
+// isShortHint: the card that linked here was a Short, so start with the 9:16 player.
+async function watchView(videoId, isShortHint = false) {
   stopObserver();
 
   // Render the player immediately — the embed iframe plays independently of
@@ -416,7 +464,7 @@ async function watchView(videoId) {
   app.innerHTML = `
     <div class="watch-layout">
       <div class="watch-main">
-        <div class="player-wrap" id="player-wrap">
+        <div class="player-wrap${isShortHint ? ' player-wrap--short' : ''}" id="player-wrap">
           <iframe
             id="player"
             src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
@@ -497,7 +545,7 @@ function route() {
   if (path === 'home' || path === '') return homeView();
   if (path === 'categories') return categoriesView(false);
   if (path === 'search' && params.get('q')) return searchView(params.get('q'));
-  if (path === 'watch'  && params.get('v')) return watchView(params.get('v'));
+  if (path === 'watch'  && params.get('v')) return watchView(params.get('v'), params.get('short') === '1');
 
   homeView();
 }

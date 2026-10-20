@@ -531,3 +531,42 @@ video::-webkit-media-controls-panel { background: #111; }
   .cat-actions { position: sticky; bottom: 12px; }
   .cat-actions .btn { flex: 1; }
 }
+
+/* ── Home format tabs (All / Full videos / Shorts) ── */
+.format-tabs {
+  display: flex;
+  gap: 8px;
+  margin: -4px 0 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.format-tabs::-webkit-scrollbar { display: none; }
+.format-tab {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  background: var(--bg3);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.format-tab:hover { background: var(--border); }
+.format-tab[aria-selected="true"] { background: var(--text); color: var(--bg); }
+
+/* ── Shorts-only grid: 9:16 portrait thumbnails ── */
+.grid--shorts { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.grid--shorts .card-thumb { aspect-ratio: 9 / 16; }
+.grid--shorts .card-thumb img { object-position: center; }
+.grid--shorts .card-short-badge { display: none; }
+
+@media (max-width: 600px) {
+  .format-tab { padding: 7px 12px; font-size: 0.82rem; }
+  .grid--shorts { grid-template-columns: 1fr 1fr; gap: 10px; }
+}
