@@ -357,6 +357,40 @@ async function workerMain() {
     return new YT.VideoInfo([{ data: {} }, next], yt.actions, '');
   }
 
+  // Last resort when every per-video Innertube endpoint is blocked:
+  // oEmbed (public, not IP-blocked) gives title + channel; a search for the
+  // title (search is not blocked) gives views/duration from the matching
+  // result and a list of related videos.
+  async function getInfoFromOEmbed(yt, id) {
+    const r = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}&format=json`);
+    if (!r.ok) throw new Error(`oEmbed failed with status code ${r.status}`);
+    const o = await r.json();
+
+    let self = null;
+    let related = [];
+    try {
+      const sr = await yt.search(o.title);
+      const vids = (sr.results || []).flatMap(extractVideos);
+      self = vids.find(v => v.id === id) || null;
+      related = vids.filter(v => v.id !== id).slice(0, 20);
+    } catch (e) {
+      console.warn(wid, `[/api/video] related search failed for ${id}: ${e.message}`);
+    }
+
+    return {
+      id,
+      title:       o.title || '',
+      channel:     o.author_name || '',
+      channelId:   self?.channelId || '',
+      views:       self?.views || '',
+      description: '',
+      duration:    self?.duration || '',
+      isShort:     !!self?.isShort,
+      related,
+    };
+  }
+
   // ─── Express ──────────────────────────────────────────────────────────────
   const app = express();
 
@@ -472,12 +506,19 @@ async function workerMain() {
           return fmtVideoInfo(await withTimeout(yt.getInfo(id), 15_000, `getInfo:${id}`));
         } catch (e) {
           if (!is403(e)) throw e;
-          // YouTube blocks the /player endpoint from datacenter IPs (Render) with
-          // 403 regardless of session. Playback uses the embed iframe, so we only
-          // need metadata — fetch it from /next, which is not blocked.
-          console.warn(wid, `[/api/video] /player rejected for ${id}, using /next only`);
-          return fmtVideoInfo(await withTimeout(getInfoFromNext(yt, id), 15_000, `next:${id}`), id);
+          // YouTube blocks the per-video endpoints (/player, and often /next)
+          // from datacenter IPs (Render) with 403. Playback uses the embed
+          // iframe, so we only need metadata — try progressively less
+          // YouTube-dependent sources until one works.
+          console.warn(wid, `[/api/video] getInfo rejected for ${id}: ${e.message}`);
         }
+        try {
+          const info = fmtVideoInfo(await withTimeout(getInfoFromNext(yt, id), 10_000, `next:${id}`), id);
+          if (info.title) return info;
+        } catch (e) {
+          console.warn(wid, `[/api/video] /next failed for ${id}: ${e.message}`);
+        }
+        return await withTimeout(getInfoFromOEmbed(yt, id), 15_000, `oembed:${id}`);
       });
       res.json(info);
     } catch (e) {
