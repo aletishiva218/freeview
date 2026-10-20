@@ -49,9 +49,9 @@
       if (t && t !== lastTitle) { lastTitle = t; send({ type: 'title', title: t }); }
     };
     setInterval(reportTitle, 1000);
-    // Leaving the watch page stops the player.
+    // Leaving the watch page / Shorts viewer stops the player.
     window.addEventListener('hashchange', function () {
-      if (location.hash.indexOf('#watch') !== 0) send({ type: 'state', state: 'stopped' });
+      if (!/^#(watch|shorts)\?/.test(location.hash)) send({ type: 'state', state: 'stopped' });
     });
     return;
   }

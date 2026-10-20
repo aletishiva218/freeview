@@ -586,3 +586,155 @@ video::-webkit-media-controls-panel { background: #111; }
   margin-right: auto;
   border-radius: var(--radius);
 }
+
+/* ── Shorts viewer (full-screen vertical feed) ── */
+html.shorts-open, html.shorts-open body { overflow: hidden; }
+
+.shorts-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #000;
+  color: #fff;
+}
+.shorts-feed {
+  height: 100%;
+  /* Paged by JS (swipe / wheel / keys), so no native scrolling or snapping. */
+  overflow-y: hidden;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.short-slide {
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.short-frame {
+  position: relative;
+  height: 100%;
+  aspect-ratio: 9 / 16;
+  max-width: 100%;
+  overflow: hidden;
+  background: #111;
+}
+.short-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.short-player, .short-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+/* Catches taps (play/pause) and swipes so they scroll the feed instead of
+   being swallowed by the cross-origin player iframe. */
+.short-tap { position: absolute; inset: 0; z-index: 2; cursor: pointer; }
+
+.short-paused {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  padding-left: 6px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 30px;
+  pointer-events: none;
+}
+.short-slide.is-paused .short-paused { display: flex; }
+
+.short-info {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  padding: 56px 16px 20px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  pointer-events: none;
+}
+.short-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+.short-meta { margin-top: 4px; font-size: 0.82rem; color: #ddd; }
+
+.short-slide--end { flex-direction: column; }
+.short-end { text-align: center; }
+.short-end p { margin-bottom: 16px; font-size: 1.05rem; color: #ddd; }
+
+.shorts-btn {
+  position: absolute;
+  z-index: 5;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  /* Visible both over a video and over the black desktop background. */
+  background: rgba(30, 30, 30, 0.65);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.shorts-btn:hover { background: rgba(60, 60, 60, 0.8); }
+.shorts-close { top: max(12px, env(safe-area-inset-top)); left: 12px; }
+.shorts-mute  { top: max(12px, env(safe-area-inset-top)); right: 12px; }
+.shorts-unmute {
+  position: absolute;
+  z-index: 5;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #000;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.shorts-unmute[hidden] { display: none; }
+.shorts-nav {
+  position: absolute;
+  right: 24px;
+  top: 50%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transform: translateY(-50%);
+}
+.shorts-nav .shorts-btn { position: static; width: 48px; height: 48px; font-size: 16px; }
+
+/* Desktop: rounded card with breathing room; phones: edge-to-edge. */
+@media (min-width: 701px) {
+  .short-frame { height: calc(100% - 32px); border-radius: 12px; }
+}
+@media (max-width: 700px) {
+  .shorts-nav { display: none; } /* swipe instead */
+}
