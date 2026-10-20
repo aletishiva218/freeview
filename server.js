@@ -611,16 +611,25 @@ async function workerMain() {
 
   // Search (5-min cache per query+page, single-flight)
   app.get('/api/search', async (req, res) => {
-    const q    = String(req.query.q || '').trim();
-    const page = Math.max(1, Math.min(10, parseInt(req.query.page) || 1));
+    const q      = String(req.query.q || '').trim();
+    const page   = Math.max(1, Math.min(10, parseInt(req.query.page) || 1));
+    const format = FEED_FORMATS.has(req.query.format) ? req.query.format : 'all';
     if (!q) return res.json({ videos: [], hasMore: false });
     try {
-      const data = await withCache(`s:${q}:${page}`, 5 * 60_000, async () => {
-        const yt = await getYT();
-        const sr = await getSearchPage(yt, q, page, `cont:s:${q}`);
+      // all: YouTube's normal mixed results (videos + Shorts shelves).
+      // videos: video-only search (no Shorts). shorts: YouTube's Shorts search.
+      const data = await withCache(`s:${format}:${q}:${page}`, 5 * 60_000, async () => {
+        const yt   = await getYT();
+        const opts = format === 'videos' ? { type: 'video' } : format === 'shorts' ? { type: 'shorts' } : {};
+        const sr   = await getSearchPage(yt, q, page, `cont:s:${format}:${q}`, opts);
         if (!sr) return { videos: [], hasMore: false };
+        let videos;
+        if (format === 'videos')      videos = (sr.videos || []).map(fmtVideo).filter(v => v && !v.isShort);
+        else if (format === 'shorts') videos = (sr.results || []).flatMap(extractVideos).filter(v => v.isShort);
+        else                          videos = (sr.results || []).flatMap(extractVideos);
+        const seen = new Set();
         return {
-          videos: (sr.results || []).flatMap(extractVideos).slice(0, 40),
+          videos: videos.filter(v => !seen.has(v.id) && seen.add(v.id)).slice(0, 40),
           hasMore: sr.has_continuation || false,
         };
       });

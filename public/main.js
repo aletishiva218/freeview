@@ -50,7 +50,7 @@ const api = {
     const q = qs.toString();
     return apiFetch(`/api/home${q ? `?${q}` : ''}`);
   },
-  search: (q, page = 1) => apiFetch(`/api/search?q=${encodeURIComponent(q)}${page > 1 ? `&page=${page}` : ''}`),
+  search: (q, page = 1, format = 'all') => apiFetch(`/api/search?q=${encodeURIComponent(q)}${page > 1 ? `&page=${page}` : ''}${format !== 'all' ? `&format=${format}` : ''}`),
   video:  (id) => apiFetch(`/api/video/${encodeURIComponent(id)}`, 45_000),
 };
 
@@ -332,8 +332,18 @@ function setRefreshing(on) {
 app.addEventListener('click', e => {
   const tab = e.target.closest('.format-tab');
   if (!tab || tab.getAttribute('aria-selected') === 'true') return;
-  FeedFormat.set(tab.dataset.format);
   window.scrollTo(0, 0);
+  const { path, params } = parseHash();
+  if (path === 'search') {
+    // Search keeps its tab in the URL; replace (not push) so Back skips tab switches.
+    const q = params.get('q');
+    const f = tab.dataset.format;
+    history.replaceState(null, '', `#search?q=${encodeURIComponent(q)}${f !== 'all' ? `&f=${f}` : ''}`);
+    renderedHash = location.hash;
+    searchView(q, f);
+    return;
+  }
+  FeedFormat.set(tab.dataset.format);
   homeView();
 });
 
@@ -408,10 +418,13 @@ function categoriesView(firstVisit = false) {
   });
 }
 
-async function searchView(q) {
+// format lives in the URL (#search?q=…&f=shorts) so Back/reload keep it.
+async function searchView(q, format = 'all') {
+  if (!FORMATS.some(f => f.id === format)) format = 'all';
   stopObserver();
-  app.innerHTML = spinner();
   searchInput.value = q;
+  const header = `<p class="section-title">Results for &ldquo;${esc(q)}&rdquo;</p>${formatTabs(format)}`;
+  app.innerHTML = header + spinner();
 
   let page    = 1;
   let loading = false;
@@ -425,18 +438,20 @@ async function searchView(q) {
     if (page > 1) app.appendChild(loader);
 
     try {
-      const { videos, hasMore } = await api.search(q, page);
+      const { videos, hasMore } = await api.search(q, page, format);
+      // User switched tab or searched again while this was loading
+      const now = parseHash();
+      if (now.path !== 'search' || now.params.get('q') !== q || (now.params.get('f') || 'all') !== format) return;
 
       loader.remove();
 
       if (page === 1) {
         if (!videos.length) {
-          app.innerHTML = msg(`No results for "${q}"`, 'Try a different search term.');
+          const what = format === 'shorts' ? 'Shorts' : format === 'videos' ? 'full videos' : 'results';
+          app.innerHTML = header + msg(`No ${what} for "${q}"`, 'Try a different search term or tab.');
           return;
         }
-        app.innerHTML = `
-          <p class="section-title">Results for &ldquo;${esc(q)}&rdquo;</p>
-          ${videoGrid(videos)}`;
+        app.innerHTML = header + videoGrid(videos, format === 'shorts');
       } else {
         document.getElementById('main-grid')
           ?.insertAdjacentHTML('beforeend', videos.map(v => videoCard(v)).join(''));
@@ -447,7 +462,7 @@ async function searchView(q) {
 
     } catch (e) {
       loader.remove();
-      if (page === 1) app.innerHTML = msg('Search failed', e.message, true);
+      if (page === 1) app.innerHTML = header + msg('Search failed', e.message, true);
     } finally {
       loading = false;
     }
@@ -563,6 +578,8 @@ const ShortsViewer = (() => {
   let playing = false, started = false, userPaused = false;
   let muted = false, autoMuted = false;
   let nextPage = 1, exhausted = false, loadingMore = false, loadFailedAt = 0;
+  // Opened from search results: keep loading Shorts for that search query.
+  let searchQuery = null;
   // Gesture state: the feed is paged by our own handlers (like YouTube) rather
   // than native scroll-snap, which needs a >50% drag and ignores short flicks.
   let dragging = false, dragY0 = 0, dragTop0 = 0, dragIndex = 0, dragTrail = [];
@@ -582,6 +599,8 @@ const ShortsViewer = (() => {
       ? queued.filter(x => x && /^[\w-]{11}$/.test(x.id))
       : [{ id: startId, title: '', views: '', thumbnail: `https://i.ytimg.com/vi/${startId}/hqdefault.jpg` }];
     ids = new Set(items.map(x => x.id));
+    searchQuery = renderedHash?.startsWith('#search?')
+      ? new URLSearchParams(renderedHash.slice('#search?'.length)).get('q') : null;
     active = -1; nextPage = 1; exhausted = false; loadingMore = false; loadFailedAt = 0;
     started = false; playing = false; userPaused = false;
 
@@ -689,7 +708,8 @@ const ShortsViewer = (() => {
     } catch { /* title stays empty; playback is unaffected */ }
   }
 
-  // More Shorts from the user's categories (same cached feed as the Shorts tab).
+  // More Shorts: for the search they came from, otherwise from the user's
+  // categories (same cached feeds as the Shorts tabs).
   async function loadMore() {
     if (!root || loadingMore || exhausted) return;
     if (Date.now() - loadFailedAt < 10_000) return; // back off after a failure
@@ -698,7 +718,9 @@ const ShortsViewer = (() => {
       const cats = Prefs.getCategories() || [];
       let added = 0;
       while (root && !exhausted && added < 5 && nextPage <= 10) {
-        const { videos, hasMore } = await api.home(nextPage, cats, FeedRefresh.get(), 'shorts');
+        const { videos, hasMore } = searchQuery
+          ? await api.search(searchQuery, nextPage, 'shorts')
+          : await api.home(nextPage, cats, FeedRefresh.get(), 'shorts');
         if (!root) return;
         nextPage++;
         const fresh = videos.filter(v => v.isShort && !ids.has(v.id));
@@ -929,7 +951,7 @@ function route() {
 
   if (path === 'home' || path === '') return homeView();
   if (path === 'categories') return categoriesView(false);
-  if (path === 'search' && params.get('q')) return searchView(params.get('q'));
+  if (path === 'search' && params.get('q')) return searchView(params.get('q'), params.get('f') || 'all');
   if (path === 'watch'  && params.get('v')) return watchView(params.get('v'), params.get('short') === '1');
 
   homeView();
