@@ -228,44 +228,53 @@ async function searchView(q) {
 
 async function watchView(videoId) {
   stopObserver();
-  app.innerHTML = spinner();
+
+  // Render the player immediately — the embed iframe plays independently of
+  // our metadata API, so a metadata failure must never block playback.
+  app.innerHTML = `
+    <div class="watch-layout">
+      <div class="watch-main">
+        <div class="player-wrap" id="player-wrap">
+          <iframe
+            id="player"
+            src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+            allowfullscreen
+            class="player"
+          ></iframe>
+        </div>
+        <div class="watch-meta" id="watch-meta"><div class="spinner spinner--sm"></div></div>
+      </div>
+      <aside class="watch-related" id="watch-related"></aside>
+    </div>`;
 
   try {
     const v = await api.video(videoId);
 
-    app.innerHTML = `
-      <div class="watch-layout">
-        <div class="watch-main">
-          <div class="player-wrap${v.isShort ? ' player-wrap--short' : ''}">
-            <iframe
-              id="player"
-              src="https://www.youtube-nocookie.com/embed/${esc(videoId)}?autoplay=1&rel=0&modestbranding=1"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-              allowfullscreen
-              class="player"
-            ></iframe>
-          </div>
-          <div class="watch-meta">
-            <h1 class="watch-title">${esc(v.title)}</h1>
-            <p class="watch-channel">${esc(v.channel)}</p>
-            <p class="watch-stats">${esc([v.views, v.duration].filter(Boolean).join(' · '))}</p>
-            ${v.description ? `
-              <details class="watch-desc">
-                <summary>Description</summary>
-                <pre>${esc(v.description)}</pre>
-              </details>` : ''}
-          </div>
-        </div>
-        <aside class="watch-related">
-          <p class="watch-related-heading">Up next</p>
-          ${v.related.length ? v.related.map(r => videoCard(r, true)).join('') : ''}
-        </aside>
-      </div>`;
+    // User navigated away while the request was in flight
+    if (!document.getElementById('player') || parseHash().params.get('v') !== videoId) return;
+
+    if (v.isShort) document.getElementById('player-wrap').classList.add('player-wrap--short');
+
+    document.getElementById('watch-meta').innerHTML = `
+      <h1 class="watch-title">${esc(v.title)}</h1>
+      <p class="watch-channel">${esc(v.channel)}</p>
+      <p class="watch-stats">${esc([v.views, v.duration].filter(Boolean).join(' · '))}</p>
+      ${v.description ? `
+        <details class="watch-desc">
+          <summary>Description</summary>
+          <pre>${esc(v.description)}</pre>
+        </details>` : ''}`;
+
+    document.getElementById('watch-related').innerHTML = v.related.length ? `
+      <p class="watch-related-heading">Up next</p>
+      ${v.related.map(r => videoCard(r, true)).join('')}` : '';
 
     if (v.title) document.title = `${v.title} – FreeView`;
 
   } catch (e) {
-    app.innerHTML = msg('Could not load video', e.message, true);
+    const meta = document.getElementById('watch-meta');
+    if (meta) meta.innerHTML = '';
   }
 }
 

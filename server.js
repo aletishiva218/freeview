@@ -2,7 +2,7 @@ import cluster from 'cluster';
 import { cpus } from 'os';
 import express from 'express';
 import compression from 'compression';
-import { Innertube, Platform } from 'youtubei.js';
+import { Innertube, Platform, YT } from 'youtubei.js';
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -240,7 +240,7 @@ async function workerMain() {
     return v ? [v] : [];
   }
 
-  function fmtVideoInfo(info) {
+  function fmtVideoInfo(info, fallbackId = '') {
     const b  = info.basic_info  || {};
     const pi = info.primary_info   || {};
     const si = info.secondary_info || {};
@@ -289,7 +289,7 @@ async function workerMain() {
     const isShort = durSec > 0 && durSec <= 60;
 
     return {
-      id: b.id || '',
+      id: b.id || fallbackId,
       title,
       channel,
       channelId,
@@ -342,6 +342,19 @@ async function workerMain() {
       _contCache.set(`${prefix}:${p}`, { obj: cur, exp: Date.now() + 30 * 60_000 });
     }
     return cur;
+  }
+
+  function is403(e) {
+    return e?.message?.includes('403') || e?.message?.includes('status code');
+  }
+
+  // Builds a VideoInfo from the /next response alone (empty player response).
+  // primary_info, secondary_info and watch_next_feed are all populated from /next.
+  async function getInfoFromNext(yt, id) {
+    const next = await yt.actions.execute('/next', {
+      videoId: id, racyCheckOk: true, contentCheckOk: true,
+    });
+    return new YT.VideoInfo([{ data: {} }, next], yt.actions, '');
   }
 
   // ─── Express ──────────────────────────────────────────────────────────────
@@ -458,14 +471,12 @@ async function workerMain() {
         try {
           return fmtVideoInfo(await withTimeout(yt.getInfo(id), 15_000, `getInfo:${id}`));
         } catch (e) {
-          // Session expired or rejected (403) — reset and retry once with a fresh session
-          if (e.message?.includes('403') || e.message?.includes('status code')) {
-            console.warn(wid, '[/api/video] session rejected, resetting…');
-            resetYT();
-            const yt2 = await getYT();
-            return fmtVideoInfo(await withTimeout(yt2.getInfo(id), 15_000, `getInfo:${id}:retry`));
-          }
-          throw e;
+          if (!is403(e)) throw e;
+          // YouTube blocks the /player endpoint from datacenter IPs (Render) with
+          // 403 regardless of session. Playback uses the embed iframe, so we only
+          // need metadata — fetch it from /next, which is not blocked.
+          console.warn(wid, `[/api/video] /player rejected for ${id}, using /next only`);
+          return fmtVideoInfo(await withTimeout(getInfoFromNext(yt, id), 15_000, `next:${id}`), id);
         }
       });
       res.json(info);
